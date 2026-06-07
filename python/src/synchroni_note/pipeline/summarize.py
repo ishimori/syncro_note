@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 import ollama
 
@@ -55,3 +55,31 @@ def summarize(
     prompt = build_minutes_prompt(transcript, title=title, agenda=agenda, vocab=vocab)
     response = ollama.generate(model=model, prompt=prompt, think=think)
     return response.response.strip()
+
+
+def stream_summarize(
+    transcript: str,
+    *,
+    model: str = "gemma4:26b",
+    title: str = "",
+    agenda: str = "",
+    vocab: Iterable[str] | None = None,
+    think: bool = False,
+) -> Iterator[tuple[str, dict | None]]:
+    """議事録をストリーミング生成する。
+
+    生成中は (これまでの累積テキスト, None) を逐次返し、最後のチャンクで
+    (全文, メトリクス辞書) を返す。メトリクス: input_tokens / output_tokens / eval_s。
+    """
+    prompt = build_minutes_prompt(transcript, title=title, agenda=agenda, vocab=vocab)
+    acc = ""
+    for chunk in ollama.generate(model=model, prompt=prompt, stream=True, think=think):
+        acc += chunk.response or ""
+        if chunk.done:
+            yield acc, {
+                "input_tokens": int(chunk.prompt_eval_count or 0),
+                "output_tokens": int(chunk.eval_count or 0),
+                "eval_s": float(chunk.eval_duration or 0) / 1e9,
+            }
+        else:
+            yield acc, None

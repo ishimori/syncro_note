@@ -5,18 +5,20 @@
     # ブラウザで http://127.0.0.1:7860 を開く
 
 マイク録音 or 音声ファイルを入れて「議事録を作成」を押すと、議事録が表示される。
-完全ローカル（クラウド送信なし）。本番UIは Quasar/Tauri（別途）。
+処理中は音声長・経過時間（リアルタイム）・出力トークン数を表示し、完了時に合計時間と
+入出力トークン数・生成速度を出す。完全ローカル（クラウド送信なし）。本番UIは Quasar/Tauri（別途）。
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 from synchroni_note.pipeline.cleaning import clean_text
 from synchroni_note.pipeline.cli import DEMO_VOCAB
-from synchroni_note.pipeline.summarize import summarize
-from synchroni_note.pipeline.transcribe import transcribe, transcript_text
+from synchroni_note.pipeline.summarize import stream_summarize
+from synchroni_note.pipeline.transcribe import stream_transcribe
 
 SUMMARY_MODELS = ["gemma4:26b", "qwen3:8b", "gemma4:e4b"]
 
@@ -27,26 +29,66 @@ def make_minutes(
     agenda: str,
     summary_model: str,
     stt_model: str,
-) -> Iterator[tuple[str, str]]:
-    """音声→議事録を生成し、(議事録Markdown, ケバ取り済み書き起こし) を順次返す。
+) -> Iterator[tuple[str, str, str]]:
+    """音声→議事録を生成し、(情報行, 議事録Markdown, 書き起こし) を逐次返す。
 
-    gradio のジェネレータ出力で進捗（文字起こし中→要約中→完了）を表示する。
+    情報行に 音声長・経過時間（リアルタイム）・トークン数 を表示する。
     """
     if not audio_path:
-        yield "⚠️ 先に音声を録音するか、ファイルを入れてください。", ""
+        yield "⚠️ 先に音声を録音するか、ファイルを入れてください。", "", ""
         return
 
-    yield f"⏳ 文字起こし中（faster-whisper {stt_model} + VAD）…", ""
-    segments = transcribe(Path(audio_path), model_size=stt_model)
-    raw = transcript_text(segments)
-    cleaned = clean_text(raw, vocab=DEMO_VOCAB)
+    t0 = time.perf_counter()
+    yield "⏳ 準備中（モデル読み込み）…", "⏳ 文字起こしを開始します…", ""
 
-    yield f"⏳ 要約中（{summary_model}）… 文字起こしは下のパネルに出ています。", cleaned
-    terms = sorted(set(DEMO_VOCAB.values()))
-    minutes = summarize(cleaned, model=summary_model, title=title, agenda=agenda, vocab=terms)
+    stream = stream_transcribe(Path(audio_path), model_size=stt_model)
+    dur = stream.duration_s
+
+    def info(phase: str) -> str:
+        elapsed = time.perf_counter() - t0
+        return f"🎧 音声長 **{dur:.1f}秒** ｜ ⏱ 経過 **{elapsed:.1f}秒** ｜ {phase}"
+
+    segs: list = []
+    yield info(f"文字起こし中（{stt_model} + VAD）…"), "⏳ 文字起こし中…", ""
+    for seg in stream.segments:
+        segs.append(seg)
+        raw = "".join(s.text for s in segs)
+        phase = f"文字起こし中（{stt_model} + VAD）— {len(segs)}セグメント"
+        yield info(phase), "⏳ 文字起こし中…", raw
+
+    raw = "".join(s.text for s in segs)
+    cleaned = clean_text(raw, vocab=DEMO_VOCAB)
+    stt_s = time.perf_counter() - t0
 
     header = f"# {title}\n\n" if title else ""
-    yield header + minutes, cleaned
+    terms = sorted(set(DEMO_VOCAB.values()))
+    metrics: dict | None = None
+    minutes = ""
+    n_tok = 0
+    for acc, done_metrics in stream_summarize(
+        cleaned, model=summary_model, title=title, agenda=agenda, vocab=terms
+    ):
+        minutes = acc
+        if done_metrics is None:
+            n_tok += 1
+        else:
+            metrics = done_metrics
+        yield info(f"要約中（{summary_model}）… 出力 {n_tok} tok"), header + minutes, cleaned
+
+    total = time.perf_counter() - t0
+    summ_s = total - stt_s
+    in_tok = metrics["input_tokens"] if metrics else 0
+    out_tok = metrics["output_tokens"] if metrics else n_tok
+    eval_s = metrics["eval_s"] if metrics else 0.0
+    tps = (out_tok / eval_s) if eval_s > 0 else 0.0
+    rtf = (total / dur) if dur > 0 else 0.0
+    done = (
+        f"✅ **完了** ｜ 🎧 音声長 **{dur:.1f}秒** ｜ ⏱ 合計 **{total:.1f}秒**"
+        f"（文字起こし {stt_s:.1f}秒 / 要約 {summ_s:.1f}秒）\n\n"
+        f"🔤 入力 **{in_tok}** tok ・ 出力 **{out_tok}** tok ・ 生成 **{tps:.1f} tok/s** ｜ "
+        f"RTF（処理時間÷音声長）**{rtf:.2f}**"
+    )
+    yield done, header + minutes, cleaned
 
 
 def build_demo():
@@ -77,6 +119,7 @@ def build_demo():
                     )
                 btn = gr.Button("議事録を作成", variant="primary")
             with gr.Column(scale=1):
+                info_out = gr.Markdown(value="ここに 音声長・経過時間・トークン数 が出ます。")
                 minutes_out = gr.Markdown(value="ここに議事録が表示されます。")
                 with gr.Accordion("文字起こし（ケバ取り済み）", open=False):
                     transcript_out = gr.Textbox(label="", lines=10)
@@ -84,7 +127,7 @@ def build_demo():
         btn.click(
             make_minutes,
             inputs=[audio, title, agenda, summary_model, stt_model],
-            outputs=[minutes_out, transcript_out],
+            outputs=[info_out, minutes_out, transcript_out],
         )
     return demo
 
