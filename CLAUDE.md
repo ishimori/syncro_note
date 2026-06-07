@@ -86,5 +86,10 @@
 - 単体テストは pytest（評価期）。
 - ローカルLLM/STTの性能は `doc/plan/開発ロードマップ.md` §5 の評価指標（RTF / CER / tok/s / E2E遅延 等）を実測して判断する。
 
+### UI確認（Tauri/Quasar・重要）
+- `app/`（Tauri+Quasar）の画面は **Playwright MCP で `http://localhost:1420` を開いて Claude 自身が目視確認する**（`tauri dev` 起動中は vite がそのURLでフロントを配信。Tauriウィンドウと同じ画面）。`browser_navigate`→`browser_resize`(例1400x900)→`browser_take_screenshot`→保存pngを `Read`。**ユーザーにスクショを依頼しない**（生産性のため）。
+- 制約: 素のブラウザに Tauri ランタイム（`window.__TAURI__`/invoke/イベント）は無く、Rust/Pythonサイドカー連携部は Playwright では動かない（実ウィンドウで確認 or ダミーデータで見た目のみ）。
+- 注意: `tauri dev` 停止後も vite(node) が残り **ポート1420を占有**しがち→ `Get-NetTCPConnection -LocalPort 1420 | Stop-Process -Force` で解放してから再起動。
+
 ### セキュリティ要件
 - 機密情報の外部送信禁止。AI処理は完全ローカルで完結すること。

@@ -17,6 +17,8 @@ __pycache__/
 Cargo.lock
 # ↑ ライブラリ用。バイナリ/アプリの場合は次行をコメント化し Cargo.lock をコミットすること
 # !Cargo.lock
+# app/ は Tauri バイナリ（アプリ）のため Cargo.lock を再現性目的でコミットする
+!app/src-tauri/Cargo.lock
 
 # AIモデル・音声データ（大容量・機密。リポジトリに含めない）
 /models/
@@ -60,3 +62,6 @@ Desktop.ini
 
 # UI起動スクリプトの実行時PIDファイル
 /scripts/.synchroni-ui.pid
+
+# Playwright MCP の作業用出力（スクショ等。DD証跡は doc/DD/ に明示配置する）
+.playwright-mcp/
