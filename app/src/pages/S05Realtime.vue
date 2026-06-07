@@ -27,7 +27,8 @@ type TimelineItem = AiSeg | MemoSeg;
 
 // サイドカー契約のイベントペイロード（DD-011 §3）
 interface MetaEvent {
-  duration_s: number;
+  duration_s?: number; // mic（ライブ）は音声長未確定 → 無し
+  mode?: string; // "mic" のときライブ録音
   model: string;
   language: string;
 }
@@ -64,12 +65,14 @@ const mapping = reactive<Record<string, string>>({});
 // 文字起こしは実データを Rust 経由で受信して積む（初期は空）。
 const timeline = reactive<TimelineItem[]>([]);
 
-// 文字起こしの状態（UIの合図）。Phase 3-C で追加。
-type SttStatus = "idle" | "preparing" | "running" | "done" | "error";
+// 文字起こしの状態（UIの合図）。Phase 3-C で追加、DD-012-1 で recording/paused を追加。
+type SttStatus = "idle" | "preparing" | "running" | "recording" | "paused" | "done" | "error";
 const status = ref<SttStatus>("idle");
 const durationS = ref(0);
 const doneCount = ref(0);
 const errorMsg = ref("");
+const isMic = ref(false); // 直近セッションがマイク（ライブ）か
+const isDev = import.meta.env.DEV; // dev専用UI（疑似マイク等）。本番ビルドでは出さない
 
 // 素ブラウザ(Playwright)には Tauri ランタイムが無い → ボタンを無効化してフォールバック。
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -82,17 +85,56 @@ const fmtMs = (ms: number): string => {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 };
 
-const startSample = async (): Promise<void> => {
-  if (!isTauri) return;
-  // 再実行に備えて初期化
+const resetSession = (): void => {
   timeline.length = 0;
   doneCount.value = 0;
   errorMsg.value = "";
   status.value = "preparing"; // meta 受信まで「準備中」スピナー
+};
+
+const startSample = async (): Promise<void> => {
+  if (!isTauri) return;
+  isMic.value = false;
+  resetSession();
   try {
     await invoke("start_transcription", { audioPath: "audio/sample01.wav", model: "base" });
   } catch (e) {
     status.value = "error";
+    errorMsg.value = String(e);
+  }
+};
+
+// マイク録音（DD-012-1）。simulate 指定時はファイルを mic 代替で流す（dev/テスト・実マイク不要）。
+const startMic = async (simulate?: string): Promise<void> => {
+  if (!isTauri) return;
+  resetSession();
+  try {
+    await invoke("start_mic", { model: "base", simulate: simulate ?? null });
+  } catch (e) {
+    status.value = "error";
+    errorMsg.value = String(e);
+  }
+};
+const pauseMic = async (): Promise<void> => {
+  try {
+    await invoke("pause_mic");
+    status.value = "paused"; // サイドカーは pause で何も emit しない → 楽観更新
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+};
+const resumeMic = async (): Promise<void> => {
+  try {
+    await invoke("resume_mic");
+    status.value = "recording";
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+};
+const stopMic = async (): Promise<void> => {
+  try {
+    await invoke("stop_mic"); // 停止は stt-done 受信で status→done になる
+  } catch (e) {
     errorMsg.value = String(e);
   }
 };
@@ -120,8 +162,9 @@ onMounted(async () => {
   if (!isTauri) return;
   unlisteners.push(
     await listen<MetaEvent>("stt-meta", (e) => {
-      durationS.value = e.payload.duration_s;
-      status.value = "running"; // 準備完了 → 受信中
+      durationS.value = e.payload.duration_s ?? 0;
+      isMic.value = e.payload.mode === "mic";
+      status.value = isMic.value ? "recording" : "running"; // mic は録音中 / file は受信中
     }),
     await listen<SegmentEvent>("stt-segment", (e) => {
       const p = e.payload;
@@ -161,8 +204,8 @@ onUnmounted(() => {
         <q-btn flat round dense icon="menu" @click="leftDrawer = !leftDrawer" class="q-mr-xs">
           <q-tooltip>画面メニュー</q-tooltip>
         </q-btn>
-        <span class="rec-dot q-mr-sm" />
-        <q-toolbar-title>設計レビュー — 録音中</q-toolbar-title>
+        <span v-if="status === 'recording'" class="rec-dot q-mr-sm" />
+        <q-toolbar-title>設計レビュー{{ status === "recording" ? " — 録音中" : "" }}</q-toolbar-title>
         <q-chip dense color="white" text-color="primary" icon="schedule" :label="elapsed" class="q-mr-sm" />
         <q-chip
           dense
@@ -228,21 +271,92 @@ onUnmounted(() => {
           </q-btn>
         </q-banner>
 
-        <!-- 文字起こし開始（実ウィンドウ専用）＋状態表示。Phase 3-C で追加 -->
+        <!-- 録音操作（実ウィンドウ専用）＋状態表示。DD-012-1（マイク）＋ Phase 3-C（サンプル） -->
         <div class="row items-center q-mb-sm q-gutter-sm">
+          <!-- マイク録音（DD-012-1） -->
           <q-btn
+            v-if="status !== 'recording' && status !== 'paused'"
             unelevated
+            no-caps
+            color="red-6"
+            icon="mic"
+            label="録音開始"
+            :disable="!isTauri || status === 'preparing'"
+            @click="startMic()"
+          >
+            <q-tooltip v-if="!isTauri">実ウィンドウ（Tauri）でのみ実行できます</q-tooltip>
+          </q-btn>
+          <q-btn
+            v-if="status === 'recording'"
+            unelevated
+            no-caps
+            color="amber-7"
+            icon="pause"
+            label="一時停止"
+            @click="pauseMic"
+          />
+          <q-btn
+            v-if="status === 'paused'"
+            unelevated
+            no-caps
+            color="green-6"
+            icon="play_arrow"
+            label="再開"
+            @click="resumeMic"
+          />
+          <q-btn
+            v-if="status === 'recording' || status === 'paused'"
+            unelevated
+            no-caps
+            color="grey-7"
+            icon="stop"
+            label="停止"
+            @click="stopMic"
+          />
+
+          <!-- サンプル音声（DD-011 3-C・ファイル一括） -->
+          <q-btn
+            flat
             no-caps
             color="primary"
             icon="play_arrow"
             label="サンプルを流す"
-            :disable="!isTauri || status === 'preparing' || status === 'running'"
+            :disable="
+              !isTauri ||
+              status === 'preparing' ||
+              status === 'running' ||
+              status === 'recording' ||
+              status === 'paused'
+            "
             @click="startSample"
           >
             <q-tooltip v-if="!isTauri">実ウィンドウ（Tauri）でのみ実行できます</q-tooltip>
           </q-btn>
+
+          <!-- dev専用: 疑似マイク（実マイク不要で mic 経路を検証） -->
+          <q-btn
+            v-if="isDev"
+            flat
+            dense
+            no-caps
+            color="purple-5"
+            icon="science"
+            label="疑似マイク"
+            :disable="!isTauri || status === 'preparing' || status === 'recording' || status === 'paused'"
+            @click="startMic('audio/sample01.wav')"
+          >
+            <q-tooltip>開発用: sample01.wav を mic 経路に流す</q-tooltip>
+          </q-btn>
+
+          <!-- 状態チップ -->
           <q-chip v-if="status === 'preparing'" dense color="amber-3" text-color="grey-9" icon="hourglass_top">
-            文字起こし準備中… <q-spinner-dots color="amber-8" size="1.2em" class="q-ml-xs" />
+            準備中… <q-spinner-dots color="amber-8" size="1.2em" class="q-ml-xs" />
+          </q-chip>
+          <q-chip v-else-if="status === 'recording'" dense color="red-2" text-color="red-10" icon="mic">
+            録音中（{{ elapsed.slice(3) }}）
+          </q-chip>
+          <q-chip v-else-if="status === 'paused'" dense color="amber-3" text-color="grey-9" icon="pause">
+            一時停止中
           </q-chip>
           <q-chip v-else-if="status === 'running'" dense color="blue-2" text-color="blue-10" icon="graphic_eq">
             文字起こし中（音声長 {{ fmtMs(durationS * 1000) }}）
@@ -254,7 +368,7 @@ onUnmounted(() => {
             エラー: {{ errorMsg }}
           </q-chip>
           <q-chip v-else dense color="grey-3" text-color="grey-8" icon="info">
-            「サンプルを流す」で文字起こしを開始
+            「録音開始」かサンプルで開始
           </q-chip>
         </div>
 
@@ -303,7 +417,10 @@ onUnmounted(() => {
             <div v-if="timeline.length === 0" class="text-grey-6 q-pa-md text-center">
               <q-icon name="graphic_eq" size="28px" class="q-mb-xs" />
               <div v-if="status === 'preparing'">モデル読込中… 最初の文字起こしまで少しかかります</div>
-              <div v-else>まだ文字起こしはありません。「サンプルを流す」で開始してください。</div>
+              <div v-else-if="status === 'recording' || status === 'paused'">
+                マイク入力待ち…（話すと文字が出ます）
+              </div>
+              <div v-else>まだ文字起こしはありません。「録音開始」かサンプルで開始してください。</div>
             </div>
           </q-card-section>
         </q-card>

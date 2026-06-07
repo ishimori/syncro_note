@@ -20,6 +20,7 @@ public class Win32 {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -34,8 +35,9 @@ public class Win32 {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
-# DPI-aware にして物理ピクセルで矩形/キャプチャ/カーソルを揃える（click 側スクリプトと座標系を一致させる）
-[void][Win32]::SetProcessDPIAware()
+# Per-Monitor-Aware V2(-4) にして、どのモニタ上でも GetWindowRect/CopyFromScreen/SetCursorPos が
+# 真の物理ピクセルで揃うようにする（混在DPIの複数モニタでも座標がズレない）。失敗時は system-DPI へ。
+try { [void][Win32]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch { [void][Win32]::SetProcessDPIAware() }
 
 $proc = Get-Process -Name $Process -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1

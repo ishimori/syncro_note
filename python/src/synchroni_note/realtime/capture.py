@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import queue
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -174,10 +175,15 @@ def capture_mic(
     device: int | None = None,
     block_ms: int = 100,
     stop_event: threading.Event | None = None,
+    paused: threading.Event | None = None,
 ) -> None:
     """マイクからライブ収音し、確定チャンクを sink に渡す（16k/mono/f32）。
 
     コールバックは「キューへ push するだけ」。VAD/STT は本ループ側で行う。
+    `stop_event` がセットされると flush して終了。`paused` がセットされている間は
+    ブロックを破棄する（＝チャンカに入れない＝時間も進めない＝一時停止）。
+
+    診断メッセージは **stderr** へ出す（呼び出し側が stdout を JSON 専用に使うため汚さない）。
     """
     import sounddevice as sd
 
@@ -185,7 +191,7 @@ def capture_mic(
 
     def _cb(indata, _frames, _time, status) -> None:  # noqa: ANN001 (sd 既定シグネチャ)
         if status:
-            print(f"[capture] {status}", flush=True)
+            print(f"[capture] {status}", file=sys.stderr, flush=True)
         q.put(indata[:, 0].copy())
 
     blocksize = max(1, int(block_ms * SAMPLE_RATE / 1000))
@@ -198,12 +204,14 @@ def capture_mic(
         device=device,
         callback=_cb,
     ):
-        print("● 録音中 ... Ctrl+C で終了", flush=True)
+        print("● 録音中 ... Ctrl+C で終了", file=sys.stderr, flush=True)
         while not stop_event.is_set():
             try:
                 block = q.get(timeout=0.5)
             except queue.Empty:
                 continue
+            if paused is not None and paused.is_set():
+                continue  # 一時停止中は破棄（チャンカに入れない）
             for ch in chunker.push(block):
                 sink(ch)
         for ch in chunker.flush():

@@ -1,7 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -18,8 +18,13 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000; // uv のコンソール窓が一瞬出るのを抑止
 
-/// 起動中の Python サイドカー(子プロセス)を1つ保持する。ウィンドウ破棄時の kill 用（DA#4/新4）。
-struct SttState(Mutex<Option<Child>>);
+/// 起動中の Python サイドカー1本を保持する（同時に1セッション）。
+/// `stdin` はマイク制御（pause/resume/stop）の書き込み口。ウィンドウ破棄時の kill 用（DA#4/新4）。
+struct SttSession {
+    child: Child,
+    stdin: Option<ChildStdin>,
+}
+struct SttState(Mutex<Option<SttSession>>);
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -39,34 +44,33 @@ fn repo_python_dir() -> Result<PathBuf, String> {
         .map_err(|e| format!("python ディレクトリが見つかりません({}): {e}", dir.display()))
 }
 
-/// サンプル音声を Python サイドカーで文字起こしし、JSON Lines を Tauri イベントへ中継する。
+/// サイドカー(uv → python -m …sidecar)を起動し、stdout(JSON Lines)を Tauri イベントへ中継する。
 ///
-/// 即時 return（reader スレッドで stdout を1行ずつ読み続ける）。1行=1JSON を `type` で振り分け、
-/// `stt-meta` / `stt-segment` / `stt-done` / `stt-error` を全ウィンドウへ emit する。
-#[tauri::command]
-fn start_transcription(
-    app: AppHandle,
-    state: State<'_, SttState>,
-    audio_path: String,
-    model: Option<String>,
+/// 既存セッションがあれば先に kill（マイクの起動しっぱなし防止）。`want_stdin` 時は子の stdin を
+/// パイプ・保持してマイクの pause/resume/stop 制御に使う。reader スレッドで即時 return。
+/// 1行=1JSON を `type` で振り分け `stt-meta`/`stt-segment`/`stt-done`/`stt-error` を emit。
+fn spawn_and_relay(
+    app: &AppHandle,
+    state: &SttState,
+    args: &[&str],
+    want_stdin: bool,
 ) -> Result<(), String> {
-    let py_dir = repo_python_dir()?;
-    let model = model.unwrap_or_else(|| "base".into());
+    // 進行中セッションがあれば先に終了（start→start での取り残し防止）。
+    let prev = state.0.lock().unwrap().take();
+    if let Some(sess) = prev {
+        kill_session(sess);
+    }
 
+    let py_dir = repo_python_dir()?;
     let mut cmd = Command::new("uv");
     cmd.current_dir(&py_dir)
         .env("PYTHONUTF8", "1") // 文字化け保険（DA#2）
-        .args([
-            "run",
-            "python",
-            "-m",
-            "synchroni_note.pipeline.sidecar",
-            &audio_path,
-            "--model",
-            &model,
-        ])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if want_stdin {
+        cmd.stdin(Stdio::piped());
+    }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -76,6 +80,7 @@ fn start_transcription(
 
     let out = BufReader::new(child.stdout.take().ok_or("stdout を取得できません")?);
     let err = BufReader::new(child.stderr.take().ok_or("stderr を取得できません")?);
+    let stdin = child.stdin.take(); // want_stdin の時のみ Some
     let app2 = app.clone();
 
     // stderr は別スレッドでログへ（JSON に混ぜない＝DA-新3）
@@ -106,43 +111,116 @@ fn start_transcription(
         eprintln!("[stt] stdout closed (sidecar finished)");
     });
 
-    *state.0.lock().unwrap() = Some(child); // kill 用に保持
+    *state.0.lock().unwrap() = Some(SttSession { child, stdin });
     Ok(())
 }
 
-/// 保持中の子プロセスを kill する（ウィンドウ破棄・アプリ終了時）。
+/// サンプル音声ファイルを文字起こし（DD-011 3-C）。stdin 制御は不要。
+#[tauri::command]
+fn start_transcription(
+    app: AppHandle,
+    state: State<'_, SttState>,
+    audio_path: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    let model = model.unwrap_or_else(|| "base".into());
+    let args = vec![
+        "run",
+        "python",
+        "-m",
+        "synchroni_note.pipeline.sidecar",
+        audio_path.as_str(),
+        "--model",
+        model.as_str(),
+    ];
+    spawn_and_relay(&app, state.inner(), &args, false)
+}
+
+/// マイクからライブ文字起こし（DD-012-1）。`simulate` 指定時はファイルを mic 代替で流す（dev/テスト）。
+/// stdin をパイプして pause/resume/stop を受け付ける。
+#[tauri::command]
+fn start_mic(
+    app: AppHandle,
+    state: State<'_, SttState>,
+    model: Option<String>,
+    simulate: Option<String>,
+) -> Result<(), String> {
+    let model = model.unwrap_or_else(|| "base".into());
+    let mut args: Vec<&str> = vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar"];
+    match simulate.as_deref() {
+        Some(path) => {
+            args.push("--simulate");
+            args.push(path);
+        }
+        None => args.push("--mic"),
+    }
+    args.push("--model");
+    args.push(model.as_str());
+    spawn_and_relay(&app, state.inner(), &args, true)
+}
+
+/// マイクセッションの stdin に制御コマンド（pause/resume/stop）を1行書く。
+fn write_ctrl(state: &SttState, cmd: &str) -> Result<(), String> {
+    let mut guard = state.0.lock().unwrap();
+    let sess = guard.as_mut().ok_or("録音セッションがありません")?;
+    let stdin = sess.stdin.as_mut().ok_or("このセッションは制御できません")?;
+    eprintln!("[stt] ctrl {cmd}"); // 検証用ログ（pause/resume/stop）
+    stdin
+        .write_all(format!("{cmd}\n").as_bytes())
+        .and_then(|_| stdin.flush())
+        .map_err(|e| format!("制御コマンド送信失敗({cmd}): {e}"))
+}
+
+#[tauri::command]
+fn pause_mic(state: State<'_, SttState>) -> Result<(), String> {
+    write_ctrl(state.inner(), "pause")
+}
+
+#[tauri::command]
+fn resume_mic(state: State<'_, SttState>) -> Result<(), String> {
+    write_ctrl(state.inner(), "resume")
+}
+
+#[tauri::command]
+fn stop_mic(state: State<'_, SttState>) -> Result<(), String> {
+    write_ctrl(state.inner(), "stop")
+}
+
+/// セッションのプロセスツリーを終了する（uv とその孫 python/whisper を一掃）。
 ///
 /// Windows では `uv`(子) を kill しても `python`/whisper(孫) が残りうる（DA-新4）。
 /// `child.kill()` は直接の子(uv)しか終了させないため、`taskkill /T /F /PID` で
 /// **プロセスツリーごと**確実に終了させる（孫まで reap）。
+fn kill_session(mut sess: SttSession) {
+    let pid = sess.child.id();
+    #[cfg(windows)]
+    {
+        let mut tk = Command::new("taskkill");
+        tk.args(["/T", "/F", "/PID", &pid.to_string()]);
+        tk.creation_flags(CREATE_NO_WINDOW);
+        match tk.status() {
+            Ok(s) => eprintln!("[stt] taskkill tree pid={pid} -> {s}"),
+            Err(e) => {
+                eprintln!("[stt] taskkill failed pid={pid}: {e}; fallback child.kill()");
+                let _ = sess.child.kill();
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match sess.child.kill() {
+            Ok(_) => eprintln!("[stt] killed sidecar pid={pid}"),
+            Err(e) => eprintln!("[stt] kill failed pid={pid}: {e}"),
+        }
+    }
+}
+
+/// 保持中のセッションを kill する（ウィンドウ破棄・アプリ終了時）。
 fn kill_sidecar(app: &AppHandle) {
-    let state = app.state::<SttState>();
-    // lock のガードを take() の行で確実に落とす（MutexGuard を if 本体へ持ち越すと
-    // state より長生きして借用エラーになる）。
-    let taken = state.0.lock().unwrap().take();
-    if let Some(mut child) = taken {
-        let pid = child.id();
-        #[cfg(windows)]
-        {
-            // プロセスツリー全体を終了（uv とその孫 python/whisper を一掃）。
-            let mut tk = Command::new("taskkill");
-            tk.args(["/T", "/F", "/PID", &pid.to_string()]);
-            tk.creation_flags(CREATE_NO_WINDOW);
-            match tk.status() {
-                Ok(s) => eprintln!("[stt] taskkill tree pid={pid} -> {s}"),
-                Err(e) => {
-                    eprintln!("[stt] taskkill failed pid={pid}: {e}; fallback child.kill()");
-                    let _ = child.kill();
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            match child.kill() {
-                Ok(_) => eprintln!("[stt] killed sidecar pid={pid}"),
-                Err(e) => eprintln!("[stt] kill failed pid={pid}: {e}"),
-            }
-        }
+    // lock のガードを take() の行で確実に落とす（MutexGuard を if 本体へ持ち越すと借用エラー）。
+    let taken = app.state::<SttState>().0.lock().unwrap().take();
+    if let Some(sess) = taken {
+        kill_session(sess);
     }
 }
 
@@ -159,6 +237,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             start_transcription,
+            start_mic,
+            pause_mic,
+            resume_mic,
+            stop_mic,
             db_commands::list_meetings,
             db_commands::create_meeting,
             db_commands::get_meeting_detail,

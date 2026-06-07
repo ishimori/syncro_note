@@ -11,6 +11,7 @@ using System;
 using System.Runtime.InteropServices;
 public class C {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
@@ -31,7 +32,8 @@ public class C {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
-[void][C]::SetProcessDPIAware()
+# Per-Monitor-Aware V2(-4): どのモニタでも GetWindowRect/SetCursorPos を真の物理ピクセルで揃える。
+try { [void][C]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch { [void][C]::SetProcessDPIAware() }
 $proc = Get-Process -Name $Process -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $proc) { Write-Error "process '$Process' has no main window"; exit 1 }
@@ -43,7 +45,8 @@ $r = New-Object C+RECT
 $sx = $r.Left + $X
 $sy = $r.Top + $Y
 [void][C]::SetCursorPos($sx, $sy)
-Start-Sleep -Milliseconds 120
+Start-Sleep -Milliseconds 150
 [C]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero) # LEFTDOWN
+Start-Sleep -Milliseconds 70                       # WebView2 はdown/up間に少し間が要る
 [C]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero) # LEFTUP
 Write-Output ("clicked window-rel ($X,$Y) -> screen ($sx,$sy); win origin ($($r.Left),$($r.Top))")
