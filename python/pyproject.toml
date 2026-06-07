@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "faster-whisper>=1.2.1",
     "gradio>=6.16.0",
+    "kaldi-native-fbank>=1.22.3",
     "numpy>=2.4.6",
     "ollama>=0.6.2",
     "pywhispercpp>=1.5.0",

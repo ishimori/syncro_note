@@ -82,8 +82,16 @@ def _simple_cluster(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
     return simple_cluster(audio, sr)
 
 
+def _onnx_embed(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
+    # 遅延 import（onnxruntime/knf を使う手法時のみロード）
+    from synchroni_note.diarization.embedding_onnx import embedding_onnx
+
+    return embedding_onnx(audio, sr)
+
+
 METHODS: dict[str, DiarizeFn] = {
     "dummy": dummy_single_speaker,
     "dummy-alt": dummy_alternating,
     "simple-cluster": _simple_cluster,
+    "onnx-embed": _onnx_embed,
 }

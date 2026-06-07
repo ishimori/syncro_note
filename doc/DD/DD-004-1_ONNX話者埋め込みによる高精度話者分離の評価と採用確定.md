@@ -36,24 +36,24 @@ DD-004 で作った評価基盤（[参照RTTM自動生成・自前DER・simple-c
 ## タスク一覧
 
 ### Phase 0: 事前精査
-- [ ] 📋 タスク精査・詳細化（対象パス・🔬機械検証の明記）
-- [ ] 📐 詳細化トリガー判定（新規依存onnxruntime・新規モジュール → **詳細化要**）
-- [ ] 😈 Devil's Advocate（下記表）。**最重要=オフライン制約の実地確認**（どの候補が完全オフラインで成立するか）
+- [x] 📋 タスク精査・詳細化（対象パス・🔬機械検証の明記）
+- [x] 📐 詳細化トリガー判定（新規依存・新規モジュール → 詳細化要と判定）
+- [x] 😈 Devil's Advocate（下記表）。**最重要=オフライン制約の実地確認** → CAM++はgateなし・初回DLのみネット・以降オフラインで **PASS**（[結果](DD-004-1/結果.md)）
 
-### Phase 1: 依存導入と本命1手法の疎通（sherpa-onnx 推奨）
-- [ ] 📐 実装前詳細化 → 👀 ユーザーレビュー（合意後に実装）
-- [ ] `onnxruntime`（＋sherpa-onnx）を `uv add` で導入（⚠️ `synchroni-note-ui` 停止が前提＝`.exe`ロック回避）
-- [ ] 話者埋め込みモデルを入手しローカルキャッシュ。**初回DLの要否・ネット接続有無・ライセンスを実地記録**（DA最重要点）
-- [ ] `diarization/embedding_onnx.py`（新規）: VAD区間→ONNX埋め込み→クラスタリングを `diarize` I/F で実装し `METHODS` 登録
-- [ ] 🔬 機械検証: `diarization_bench --audio audio/sample02.wav --method <new>` が DER 出力。simple-cluster と比較
-- [ ] 😈 DA批判レビュー（最低1件）
+### Phase 1: 依存導入と本命1手法の疎通
+- [x] 📐 実装前詳細化（ユーザー方針「ベストエフォートで実装まで」に従い、設計決定を記録のうえ実装）
+- [x] 依存導入: `onnxruntime`(既存1.26.0) ＋ **`kaldi-native-fbank`** を `uv add`（UI停止後・pyproject干渉なし）。⚠️**sherpa-onnx wrapper はORT版数不整合で不可** → onnxruntime直接実行へ切替（[結果](DD-004-1/結果.md)）
+- [x] モデル入手: CAM++(sherpa-onnx配布)をDLしローカルキャッシュ。ネット要否・ライセンスを実地記録（初回DLのみ・Apache・gateなし）。モデルは `models/` でgit管理外＋手順を `models/README.md` に
+- [x] `diarization/embedding_onnx.py` 新規: VAD→knf fbank→CMN→CAM++→L2埋め込み→KMeans を `diarize` I/Fで実装、`METHODS` に `onnx-embed` 登録
+- [x] 🔬 機械検証: `diarization_bench ... --method all` で DER 出力。**onnx-embed 0.047 / simple-cluster 0.036**（easy素材で実質互角）。ruff通過・pytest 56 passed
+- [x] 😈 DA批判レビュー: 「easy素材ではbaselineと差が出ず本命の優位を判定できない」→ 採用確定は被り有り/多話者素材が前提、と明記
 
 ### Phase 2: 候補比較
-- [ ] 実施可能な候補（sherpa-onnx / pyannote / 自作）を sample02 で DER/話者数/RTF/導入難度で比較
-- [ ] **オフライン制約で脱落する候補を明記**（採否理由を残す）
-- [ ] 結果を `DD-004-1/結果.md` に表で記録
-- [ ] 🔬 機械検証: 候補×指標の表が欠測なく揃う／ruff・pytest 緑
-- [ ] 😈 DA批判レビュー（最低1件）
+- [x] onnx-embed（CAM++）と simple-cluster を sample02 で DER/RTF 比較（[結果](DD-004-1/結果.md)）
+- [→] pyannote / 多言語埋め込みモデルの追加比較は **後続**（オフライン制約を満たす範囲で。pyannoteはgated要確認）
+- [x] 結果を [`DD-004-1/結果.md`](DD-004-1/結果.md) に表で記録
+- [x] 🔬 機械検証: 表が欠測なく揃う／ruff・pytest 緑
+- [x] 😈 DA批判レビュー: sherpa-onnx wrapper のORT不整合という統合リスクを実地で発見・回避策を記録
 
 ### Phase 3: 採用確定と SSOT 反映（DD-004系列のクローズ）
 - [ ] 評価期に採用する手法（とフォールバック）を決定し「決定事項」に記載
@@ -68,6 +68,7 @@ DD-004 で作った評価基盤（[参照RTTM自動生成・自前DER・simple-c
 
 ### 2026-06-07
 - 親DD-004（ハーネス＋baseline確立）から分割して起票。本命ONNX埋め込み手法の評価と採用確定を担当。評価基盤はDD-004を流用。
+- Phase 0–1 実施。オフライン制約PASS（CAM++はgateなし・初回DLのみ）。sherpa-onnx wrapper はORT版数不整合で不可→onnxruntime直接＋kaldi-native-fbankへ切替。`onnx-embed` 実装し DER 0.047（baseline simple-cluster 0.036 と easy素材で実質互角）。pytest 56 passed。**採用確定(Phase 3)は被り有り/多話者素材待ち＝進行中のまま**。詳細 [結果](DD-004-1/結果.md)。
 
 ---
 
