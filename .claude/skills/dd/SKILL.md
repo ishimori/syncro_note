@@ -22,8 +22,8 @@ ls doc/DD/ | grep DD-{番号}
 
 | 移動元 | 移動先 |
 |--------|--------|
-| `doc/DD/DD-{番号}_*.md` | `doc/archived/DD/` |
-| `doc/DD/DD-{番号}/` | `doc/archived/DD/DD-{番号}/` |
+| `doc/DD/DD-{番号}_*.md` | `doc/DD/archived/` |
+| `doc/DD/DD-{番号}/` | `doc/DD/archived/DD-{番号}/` |
 
 **チェックリスト（必須）:**
 - [ ] DD本体（.md）を移動した
@@ -92,7 +92,7 @@ ls doc/DD/ | grep DD-{番号}
    - Phase 1 で 0件なら自動的に Phase 2 へ
 
 2. **Phase 2: 全文検索（必要に応じて）**
-   - Grep で `doc/DD/` と `doc/archived/DD/` の `.md` ファイルを検索
+   - Grep で `doc/DD/`（アーカイブ `doc/DD/archived/` 含む）の `.md` ファイルを検索
    - 10件超はタイトルマッチを優先表示
 
 ### インデックス再構築

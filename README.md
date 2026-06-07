@@ -156,14 +156,17 @@ syncro_note/
 ├── README.md                  # 本ファイル
 ├── CLAUDE.md                  # Claude Code 用プロジェクト設定
 ├── doc/
+│   ├── INDEX_MAP.md            # ★ doc配下の地図（ドキュメントの入口）
 │   ├── plan/
 │   │   ├── 企画書.md           # コンセプト・最終形の設計
-│   │   └── 開発ロードマップ.md   # 実行計画（フェーズ／DD候補／評価指標）
+│   │   ├── 開発ロードマップ.md   # 実行計画（フェーズ／DD候補／評価指標）
+│   │   └── 要件/               # 最終形の機能仕様書（全5ファイル＋目次）
 │   ├── DD/                     # 設計ドキュメント（チケット）と INDEX
-│   ├── archived/DD/           # 完了DDのアーカイブ
+│   │   └── archived/           # 完了DDのアーカイブ
 │   ├── templates/             # DDテンプレ・コーディング基準
 │   ├── development-flow.md     # 開発5ステップ
 │   └── da-method.md           # DA品質フィルター
+├── scripts/                   # 索引の生成・ドリフト検知スクリプト
 └── .claude/                   # スキル・フック・設定
 ```
 

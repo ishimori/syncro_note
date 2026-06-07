@@ -5,14 +5,34 @@
 
 ## 主要ドキュメント
 
+- **ドキュメント索引マップ（doc/配下の地図・入口）**: `doc/INDEX_MAP.md`
 - **プロジェクト概要**: `README.md`
 - **企画書（最終形の設計）**: `doc/plan/企画書.md`
 - **開発ロードマップ（実行計画・フェーズ・評価指標）**: `doc/plan/開発ロードマップ.md`
+- **機能仕様書（最終形・全5ファイル）**: `doc/plan/要件/0_index.md`
+- **基本設計書（設計SSOT・実装の正）**: `doc/spec/基本設計書.md` ← アーキ/データ構造/モデル選定/話者分離/モデル切替は本書が正。要件と食い違えば本書を優先
+
+> `doc/` 配下のどこに何があるかは **`doc/INDEX_MAP.md`** を起点に辿る。`doc/DD/` は対象外（下記「DD設定」で別管理）。
+
+## ドキュメント索引（INDEX_MAP）の維持
+
+`doc/INDEX_MAP.md` は `doc/` 配下のドキュメント全体の地図（手動キュレーション）。**`doc/DD/` 配下は対象外**（アーカイブ `doc/DD/archived/` を含む。DDは `DD-INDEX.md` で別管理）。
+
+**メンテナンス規約（必須）**:
+
+- `doc/` 配下（`doc/DD/` を除く）の文書を **追加・移動・改名・削除** したら、**同じ作業の中で `doc/INDEX_MAP.md` を更新する**（該当行の追加／パス修正／削除）。追加・移動時は「いつ読むか」の1行説明を必ず付ける。
+- DD（`doc/DD/` 配下、アーカイブ `doc/DD/archived/` を含む）は INDEX_MAP に載せない。DDは `bash scripts/dd-index-gen.sh`／`/dd` スキルで管理する。
+- **完了前ゲート（必須）**: 上記の変更を行った作業では、報告前に必ず `bash scripts/doc-index-check.sh --strict` を実行し、**exit 0（同期OK）を確認する**。未登録・リンク切れが出たら INDEX_MAP を直してから完了とする。
+
+**自動フック化（任意・要手動登録）**:
+
+- 現状は上記の規約＋手動実行で運用する（フックによる強制ではない）。
+- フックで自動化する場合は `Stop` もしくは `PostToolUse(Edit|Write)` で `bash scripts/doc-index-check.sh` を起動する。ただし **`.claude/settings.json` は `pre-edit-guard.sh` により編集ブロックされるため、フック登録はユーザーが手動で行う**必要がある（Claude からは変更不可）。
 
 ## DD設定
 
 - **DDフォルダ**: `doc/DD/`
-- **アーカイブ**: `doc/archived/DD/`
+- **アーカイブ**: `doc/DD/archived/`
 - **テンプレート**: `doc/templates/dd_template.md`
 - **インデックス**: `doc/DD/DD-INDEX.md`
 

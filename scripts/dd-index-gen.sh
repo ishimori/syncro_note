@@ -10,14 +10,14 @@
 #
 # 使い方:
 #   bash scripts/dd-index-gen.sh
-#   bash scripts/dd-index-gen.sh --dd-dir doc/DD --archive-dir doc/archived/DD
+#   bash scripts/dd-index-gen.sh --dd-dir doc/DD --archive-dir doc/DD/archived
 # =============================================================================
 
 set -euo pipefail
 
 # --- Default paths (adjust to your project) ---
 DD_DIR="doc/DD"
-ARCHIVE_DIR="doc/archived/DD"
+ARCHIVE_DIR="doc/DD/archived"
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -95,19 +95,20 @@ fi
 ENTRIES_TMP=$(mktemp)
 trap 'rm -f "$ENTRIES_TMP"' EXIT
 
-# head -6 を全ファイルに一括実行し、awk で解析
+# head -v -n 6 を全ファイルに一括実行し、awk で解析
 # head の出力形式: "==> filepath <==" + 内容行
+# NOTE: -v を付けると、ファイルが1つだけ（例: アーカイブDDが1件）でも必ず
+#       "==> filepath <==" ヘッダーが出力される。-v が無いと単一ファイル時に
+#       ヘッダーが省略され、その entry が直前ファイルに吸収されて消える不具合になる。
 {
     if [ ${#DD_FILES[@]} -gt 0 ]; then
-        head -6 "${DD_FILES[@]}" 2>/dev/null
+        head -v -n 6 "${DD_FILES[@]}" 2>/dev/null
     fi
     if [ ${#ARCHIVE_FILES[@]} -gt 0 ]; then
-        head -6 "${ARCHIVE_FILES[@]}" 2>/dev/null
+        head -v -n 6 "${ARCHIVE_FILES[@]}" 2>/dev/null
     fi
 } | awk '
-# head -6 の出力を解析
-# 単一ファイルの場合 "==> ... <==" ヘッダーが出ないため、事前に判定が必要
-# → 呼び出し元で head に複数ファイルを渡すか、1ファイルでもヘッダーを出すようにする
+# head -v -n 6 の出力を解析（-v により単一ファイルでも "==> filepath <==" ヘッダーが付く）
 
 BEGIN {
     FS = "|"

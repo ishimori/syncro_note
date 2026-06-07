@@ -73,7 +73,7 @@ git add . && git commit -m "機能名: 概要"
 /dd archive DD-XXX
 ```
 
-DDは `doc/archived/DD/` に移動される。
+DDは `doc/DD/archived/` に移動される。
 
 ---
 
