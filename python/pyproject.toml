@@ -3,7 +3,9 @@ name = "synchroni-note"
 version = "0.1.0"
 description = "SynchroniNote - ローカル議事録ツール（評価/MVPハーネス）"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ollama>=0.6.2",
+]
 
 [dependency-groups]
 dev = [
