@@ -4,6 +4,7 @@
 // 「確定テキストが主役（即時・不可変）／LLM整形は薄字の追い上げ」を反映。
 // 中身（Python文字起こし）との接続は Phase 3 で行う。
 import { ref, reactive } from "vue";
+import AppNav from "../components/AppNav.vue";
 
 interface AiSeg {
   type: "ai";
@@ -20,26 +21,7 @@ interface MemoSeg {
 }
 type TimelineItem = AiSeg | MemoSeg;
 
-interface NavItem {
-  id: string;
-  name: string;
-  icon: string;
-}
-
-const NAV: NavItem[] = [
-  { id: "S-01", name: "カレンダー", icon: "calendar_month" },
-  { id: "S-02", name: "会議作成", icon: "event_note" },
-  { id: "S-03", name: "議事録詳細", icon: "description" },
-  { id: "S-04", name: "プリフライト", icon: "mic" },
-  { id: "S-05", name: "リアルタイム", icon: "graphic_eq" },
-  { id: "S-06", name: "生成中", icon: "auto_awesome" },
-  { id: "S-07", name: "プレビュー", icon: "fact_check" },
-  { id: "S-08", name: "設定", icon: "settings" },
-];
-
 const leftDrawer = ref(true);
-const nav = NAV;
-const active = "S-05";
 
 const drawer = ref(true);
 const showRefined = ref(true);
@@ -106,35 +88,8 @@ const sendMemo = (): void => {
 
 <template>
   <q-layout view="hHh LpR fFf">
-    <!-- 左ドロワー: 画面ナビ（Phase 2 ではナビ遷移は未実装＝表示のみ） -->
-    <q-drawer
-      side="left"
-      v-model="leftDrawer"
-      show-if-above
-      bordered
-      :width="230"
-      class="bg-grey-1"
-    >
-      <q-toolbar class="bg-primary text-white">
-        <q-avatar icon="graphic_eq" size="28px" />
-        <q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title>
-      </q-toolbar>
-      <q-list padding>
-        <q-item
-          v-for="n in nav"
-          :key="n.id"
-          clickable
-          :active="n.id === active"
-          active-class="bg-indigo-1 text-primary text-weight-bold"
-        >
-          <q-item-section avatar><q-icon :name="n.icon" /></q-item-section>
-          <q-item-section>
-            <q-item-label>{{ n.id }}</q-item-label>
-            <q-item-label caption>{{ n.name }}</q-item-label>
-          </q-item-section>
-        </q-item>
-      </q-list>
-    </q-drawer>
+    <!-- 左ドロワー: 画面ナビ（全画面共有。クリックでルーター遷移） -->
+    <AppNav v-model="leftDrawer" />
 
     <!-- ヘッダ: 録音状態・経過・遅延ゲージ・drop・終了 -->
     <q-header elevated class="bg-primary text-white">

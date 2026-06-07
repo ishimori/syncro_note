@@ -1,11 +1,10 @@
 <script setup lang="ts">
-// Phase 2: 中核画面 S-05（リアルタイム議事録）の静的骨格を表示する。
-// 複数画面のルーティングは後続フェーズ。現時点は S-05 単体をホストする。
-import S05Realtime from "./pages/S05Realtime.vue";
+// 画面ルーティングのホスト。左ナビ(AppNav)は各画面側に内包するため、
+// ここでは router-view のみを置く（既定は S-05 にリダイレクト）。
 </script>
 
 <template>
-  <S05Realtime />
+  <router-view />
 </template>
 
 <!-- モック準拠の Quasar ブランドカラー（インディゴ/ティール）。グローバル適用のため scoped にしない -->
