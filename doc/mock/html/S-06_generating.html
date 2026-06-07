@@ -39,7 +39,7 @@
 
         <!-- モデル切替ステッパ -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="swap_horiz" class="q-mr-xs"/>処理フェーズ</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="swap_horiz" class="q-mr-xs"></q-icon>処理フェーズ</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section>
             <q-stepper v-model="step" vertical flat color="primary" animated>
@@ -59,7 +59,7 @@
         <!-- 進捗 -->
         <q-card flat bordered class="q-mb-md">
           <q-card-section>
-            <div class="row items-center q-mb-xs"><div class="text-caption text-grey-7">生成トークン {{ tok }} / ~3000</div><q-space/><div class="text-caption text-grey-7">{{ tps }} tok/s</div></div>
+            <div class="row items-center q-mb-xs"><div class="text-caption text-grey-7">生成トークン {{ tok }} / ~3000</div><q-space></q-space><div class="text-caption text-grey-7">{{ tps }} tok/s</div></div>
             <q-linear-progress :value="tok/3000" color="primary" track-color="grey-3" rounded size="10px"></q-linear-progress>
           </q-card-section>
         </q-card>

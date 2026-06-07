@@ -39,26 +39,26 @@
 
         <!-- 基本情報 -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="info" class="q-mr-xs"/>基本情報</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="info" class="q-mr-xs"></q-icon>基本情報</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section class="q-gutter-md">
             <q-input outlined v-model="title" label="会議名 *" :rules="[v=>!!v||'必須']"></q-input>
             <div class="row q-col-gutter-md">
               <q-input class="col-12 col-sm-6" outlined v-model="date" label="日付" mask="####/##/##">
-                <template v-slot:append><q-icon name="event"/></template>
+                <template v-slot:append><q-icon name="event"></q-icon></template>
               </q-input>
               <q-input class="col-6 col-sm-3" outlined v-model="start" label="開始" mask="##:##"></q-input>
               <q-input class="col-6 col-sm-3" outlined v-model="end" label="終了" mask="##:##"></q-input>
             </div>
             <q-input outlined v-model="place" label="場所 / URL" placeholder="会議室A / https://...">
-              <template v-slot:prepend><q-icon name="place"/></template>
+              <template v-slot:prepend><q-icon name="place"></q-icon></template>
             </q-input>
           </q-card-section>
         </q-card>
 
         <!-- アジェンダ -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="list_alt" class="q-mr-xs"/>アジェンダ（Markdown可）</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="list_alt" class="q-mr-xs"></q-icon>アジェンダ（Markdown可）</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section>
             <q-input outlined type="textarea" v-model="agenda" autogrow input-style="min-height:90px"></q-input>
@@ -67,14 +67,14 @@
 
         <!-- 参加者 -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="group" class="q-mr-xs"/>参加者リスト</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="group" class="q-mr-xs"></q-icon>参加者リスト</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section>
             <q-list bordered separator class="rounded-borders q-mb-sm">
               <q-item v-for="(p,i) in participants" :key="i">
                 <q-item-section avatar><q-avatar color="secondary" text-color="white">{{ p.name.charAt(0) }}</q-avatar></q-item-section>
                 <q-item-section>
-                  <q-item-label>{{ p.name }} <q-badge v-if="p.role" outline color="grey-7" :label="p.role" class="q-ml-xs"/></q-item-label>
+                  <q-item-label>{{ p.name }} <q-badge v-if="p.role" outline color="grey-7" :label="p.role" class="q-ml-xs"></q-badge></q-item-label>
                   <q-item-label caption>声の補足: {{ p.voice || '—' }}</q-item-label>
                 </q-item-section>
                 <q-item-section side><q-btn flat round dense icon="close" color="grey-6"></q-btn></q-item-section>
@@ -91,7 +91,7 @@
 
         <!-- 専門用語 -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="sell" class="q-mr-xs"/>専門用語辞書</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="sell" class="q-mr-xs"></q-icon>専門用語辞書</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section>
             <q-select outlined v-model="vocab" use-input use-chips multiple hide-dropdown-icon new-value-mode="add-unique"
@@ -101,7 +101,7 @@
 
         <!-- 資料 -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="attach_file" class="q-mr-xs"/>参考資料（.xlsx / .pdf）</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="attach_file" class="q-mr-xs"></q-icon>参考資料（.xlsx / .pdf）</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section>
             <div class="dropzone q-pa-lg text-center text-grey-6 q-mb-sm">

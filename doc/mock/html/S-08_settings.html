@@ -39,14 +39,14 @@
 
         <!-- マイク -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="mic" class="q-mr-xs"/>マイク</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="mic" class="q-mr-xs"></q-icon>マイク</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section><q-select outlined dense v-model="mic" :options="mics" label="既定の入力デバイス"></q-select></q-card-section>
         </q-card>
 
         <!-- モデル -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="memory" class="q-mr-xs"/>モデル</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="memory" class="q-mr-xs"></q-icon>モデル</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section class="q-gutter-md">
             <q-select outlined dense v-model="stt" :options="stts" label="STT（文字起こし）"></q-select>
@@ -59,7 +59,7 @@
 
         <!-- コア配分 -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="developer_board" class="q-mr-xs"/>スレッド / コア配分（8C/16T）</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="developer_board" class="q-mr-xs"></q-icon>スレッド / コア配分（8C/16T）</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section class="q-gutter-lg">
             <div>
@@ -71,14 +71,14 @@
               <q-slider v-model="numThread" :min="1" :max="8" markers label color="primary"></q-slider>
             </div>
             <q-banner dense class="bg-amber-1 text-grey-9" rounded>
-              <q-icon name="warning" color="amber-8"/> 既定は STT↔LLM の時間分離（同時実行はメモリ帯域競合で16〜51%劣化しうる）。
+              <q-icon name="warning" color="amber-8"></q-icon> 既定は STT↔LLM の時間分離（同時実行はメモリ帯域競合で16〜51%劣化しうる）。
             </q-banner>
           </q-card-section>
         </q-card>
 
         <!-- データ -->
         <q-card flat bordered>
-          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="folder" class="q-mr-xs"/>データ</div></q-card-section>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="folder" class="q-mr-xs"></q-icon>データ</div></q-card-section>
           <q-separator></q-separator>
           <q-card-section class="q-gutter-md">
             <q-input outlined dense v-model="dbPath" label="SQLite 保存先" readonly>

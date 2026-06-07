@@ -42,7 +42,7 @@
         <q-btn unelevated no-caps color="red-6" icon="stop" label="会議を終了" href="S-06_generating.html" class="q-ml-md"></q-btn>
       </q-toolbar>
       <q-bar class="bg-indigo-2 text-indigo-10" v-if="bypass">
-        <q-icon name="bolt"/> 処理が詰まったため LLM整形をバイパス中（生テキストを優先表示）
+        <q-icon name="bolt"></q-icon> 処理が詰まったため LLM整形をバイパス中（生テキストを優先表示）
       </q-bar>
     </q-header>
 
@@ -52,14 +52,14 @@
         <q-list padding>
           <q-item-label header>アジェンダ</q-item-label>
           <q-item><q-item-section>1. 基本設計のレビュー<br>2. 話者分離方式の確定<br>3. DD候補</q-item-section></q-item>
-          <q-separator spaced/>
+          <q-separator spaced></q-separator>
           <q-item-label header>参加者</q-item-label>
           <q-item v-for="p in participants" :key="p"><q-item-section avatar><q-avatar size="28px" color="secondary" text-color="white">{{p.charAt(0)}}</q-avatar></q-item-section><q-item-section>{{p}}</q-item-section></q-item>
-          <q-separator spaced/>
+          <q-separator spaced></q-separator>
           <q-item-label header>専門用語</q-item-label>
-          <q-item><q-item-section><div class="q-gutter-xs"><q-badge v-for="w in vocab" :key="w" outline color="primary" :label="w"/></div></q-item-section></q-item>
-          <q-separator spaced/>
-          <q-item><q-item-section><q-toggle v-model="showRefined" label="LLM整形を表示" color="primary"/></q-item-section></q-item>
+          <q-item><q-item-section><div class="q-gutter-xs"><q-badge v-for="w in vocab" :key="w" outline color="primary" :label="w"></q-badge></div></q-item-section></q-item>
+          <q-separator spaced></q-separator>
+          <q-item><q-item-section><q-toggle v-model="showRefined" label="LLM整形を表示" color="primary"></q-toggle></q-item-section></q-item>
         </q-list>
       </q-scroll-area>
     </q-drawer>
@@ -67,7 +67,7 @@
     <q-page-container>
       <q-page class="q-pa-md" style="max-width:900px;margin:0 auto">
         <q-banner dense rounded class="bg-amber-1 q-mb-sm text-grey-9">
-          <template v-slot:avatar><q-icon name="info" color="amber-8"/></template>
+          <template v-slot:avatar><q-icon name="info" color="amber-8"></q-icon></template>
           <b>確定文字起こしが主役</b>（即時・不可変）。LLM整形は薄い字の<b>追い上げ表示</b>。話者名をクリックすると参加者から選んで一括置換できます。
           <q-btn flat dense round icon="menu_open" @click="drawer=!drawer" class="float-right"><q-tooltip>コンテキスト</q-tooltip></q-btn>
         </q-banner>
@@ -86,7 +86,7 @@
                   <div class="row items-center">
                     <q-badge :color="s.confirmed?'secondary':'grey-5'" class="q-mr-sm">
                       <span class="spk">{{ displayName(s) }}</span>
-                      <q-icon name="arrow_drop_down" />
+                      <q-icon name="arrow_drop_down" ></q-icon>
                       <q-menu>
                         <q-list style="min-width:180px">
                           <q-item-label header>話者を確定</q-item-label>
@@ -100,17 +100,17 @@
                     <q-badge v-if="!s.refined" outline color="grey-6" label="unrefined" class="q-ml-sm"><q-tooltip>整形待ち（生テキスト表示中）</q-tooltip></q-badge>
                   </div>
                   <div class="q-mt-xs">{{ s.text }}</div>
-                  <div v-if="showRefined && s.refined" class="refined"><q-icon name="auto_fix_high" size="14px"/> {{ s.refined }}</div>
+                  <div v-if="showRefined && s.refined" class="refined"><q-icon name="auto_fix_high" size="14px"></q-icon> {{ s.refined }}</div>
                 </div>
               </template>
             </div>
             <!-- 生成中（タイピング中）チャンク -->
             <div class="seg">
               <div class="row items-center">
-                <q-badge color="grey-5" class="q-mr-sm">Speaker_0 <q-icon name="arrow_drop_down"/></q-badge>
+                <q-badge color="grey-5" class="q-mr-sm">Speaker_0 <q-icon name="arrow_drop_down"></q-icon></q-badge>
                 <span class="text-caption text-grey-6">{{ elapsed }}</span>
               </div>
-              <div class="q-mt-xs">それでは次のアジェンダ、話者分離の方式について<q-spinner-dots color="primary" size="1.4em"/></div>
+              <div class="q-mt-xs">それでは次のアジェンダ、話者分離の方式について<q-spinner-dots color="primary" size="1.4em"></q-spinner-dots></div>
             </div>
           </q-card-section>
         </q-card>
@@ -123,7 +123,7 @@
       <q-toolbar class="q-py-sm" style="max-width:900px;margin:0 auto;width:100%">
         <q-btn flat round dense icon="pause" color="grey-7"><q-tooltip>一時停止</q-tooltip></q-btn>
         <q-input class="col q-mx-sm" outlined dense v-model="memo" placeholder="📝 人間メモを入力（ホワイトボードの内容・口頭指示など）… Enterで挿入" @keyup.enter="sendMemo">
-          <template v-slot:prepend><q-icon name="edit_note"/></template>
+          <template v-slot:prepend><q-icon name="edit_note"></q-icon></template>
         </q-input>
         <q-btn round color="primary" icon="send" @click="sendMemo"></q-btn>
       </q-toolbar>

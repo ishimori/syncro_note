@@ -100,9 +100,9 @@ createApp({
     const weekdays = ['日','月','火','水','木','金','土']
     // 2026年6月。ダミー会議を数日に配置。
     const meetings = {
-      3:[{title:'要件レビュー', time:'10:00', status:'completed'}],
-      9:[{title:'技術選定MTG', time:'14:00', status:'completed'}],
-      12:[{title:'スプリント計画', time:'09:30', status:'completed'},{title:'1on1', time:'17:00', status:'completed'}],
+      3:[{id:'m-youken', title:'要件レビュー', time:'10:00', status:'completed'}],
+      9:[{id:'m-gijutsu', title:'技術選定MTG', time:'14:00', status:'completed'}],
+      12:[{id:'m-sprint', title:'スプリント計画', time:'09:30', status:'completed'},{id:'m-1on1', title:'1on1', time:'17:00', status:'completed'}],
       7:[{title:'定例会', time:'15:00', status:'active'}],            // 今日(=7日)・進行中
       18:[{title:'設計レビュー', time:'13:00', status:'scheduled'}],
       24:[{title:'四半期報告', time:'11:00', status:'scheduled'}],
@@ -122,7 +122,7 @@ createApp({
 
     const statusColor = s => ({scheduled:'blue-5',active:'red-5',completed:'green-6'}[s]||'grey')
     const statusIcon  = s => ({scheduled:'event',active:'fiber_manual_record',completed:'check'}[s]||'event')
-    const linkFor = m => m.status==='completed' ? 'S-03_minutes-detail.html'
+    const linkFor = m => m.status==='completed' ? 'S-03_minutes-detail.html?id='+m.id
                        : m.status==='active'    ? 'S-05_realtime.html'
                        : 'S-02_create-meeting.html'
     return { view, weekdays, weeks, statusColor, statusIcon, linkFor, leftDrawer, nav, active }

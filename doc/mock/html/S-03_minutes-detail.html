@@ -11,7 +11,6 @@
   :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
   .md h2{font-size:1.1rem;margin:1.1em 0 .4em;border-left:4px solid var(--q-primary);padding-left:.5em;}
   .md ul{margin:.2em 0 .8em 1.2em;} .md li{margin:.2em 0;}
-  .memo{background:#fff7ed;}
 </style>
 </head>
 <body>
@@ -24,8 +23,15 @@
           <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
           <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
         </q-item>
+        <q-separator spaced></q-separator>
+        <q-item-label header>過去の議事録（completed）</q-item-label>
+        <q-item v-for="m in completedList" :key="m.id" clickable :href="'S-03_minutes-detail.html?id='+m.id" :active="m.id===id" active-class="bg-green-1 text-green-9 text-weight-bold">
+          <q-item-section avatar><q-icon name="check_circle" color="green-6"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ m.title }}</q-item-label><q-item-label caption>{{ m.dateShort }}</q-item-label></q-item-section>
+        </q-item>
       </q-list>
     </q-drawer>
+
     <q-header elevated class="bg-primary text-white">
       <q-toolbar>
         <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
@@ -39,15 +45,19 @@
 
     <q-page-container>
       <q-page class="q-pa-md" style="max-width:960px;margin:0 auto">
+        <q-banner v-if="!found" class="bg-orange-2 q-mb-md" rounded>
+          <template v-slot:avatar><q-icon name="warning" color="orange-9"></q-icon></template>
+          指定の会議（id={{ id }}）が見つかりません。既定の議事録を表示しています。
+        </q-banner>
+
         <!-- メタ -->
         <q-card flat bordered class="q-mb-md">
           <q-card-section>
-            <div class="text-h6">要件レビュー</div>
-            <div class="text-grey-7 q-mt-xs">2026/06/03(水) 10:00–11:05 ・ 会議室A ・ 所要 1時間5分</div>
+            <div class="text-h6">{{ mtg.title }}</div>
+            <div class="text-grey-7 q-mt-xs">{{ mtg.date }} {{ mtg.time }} ・ {{ mtg.place }} ・ 所要 {{ mtg.dur }}</div>
             <div class="q-mt-sm row q-gutter-xs">
-              <q-chip dense icon="person" label="鈴木（PM）"></q-chip>
-              <q-chip dense icon="person" label="佐藤（エンジニア）"></q-chip>
-              <q-chip dense icon="attach_file" label="FY26_予算案.xlsx"></q-chip>
+              <q-chip v-for="p in mtg.participants" :key="p" dense icon="person" :label="p"></q-chip>
+              <q-chip v-for="a in mtg.attachments" :key="a" dense icon="attach_file" :label="a"></q-chip>
             </div>
           </q-card-section>
         </q-card>
@@ -55,25 +65,16 @@
         <!-- 最終議事録 -->
         <q-card flat bordered class="q-mb-md">
           <q-card-section class="row items-center">
-            <div class="text-subtitle1 text-weight-medium"><q-icon name="description" class="q-mr-xs"/>最終議事録</div>
+            <div class="text-subtitle1 text-weight-medium"><q-icon name="description" class="q-mr-xs"></q-icon>最終議事録</div>
             <q-space></q-space>
-            <q-badge outline color="grey-7" label="batch: gemma4:26b"></q-badge>
+            <q-badge outline color="grey-7" :label="'batch: '+mtg.model"></q-badge>
           </q-card-section>
           <q-separator></q-separator>
           <q-card-section class="md">
-            <h2>■ 会議概要</h2>
-            <ul><li>基本設計書(SSOT)のレビューを実施。リアルタイム整形を真実源にしない方針を確認。</li></ul>
-            <h2>■ 決定事項（誰が・何を・いつまでに）</h2>
-            <ul>
-              <li>佐藤：話者分離は whisper 非依存（pyannote/sherpa-onnx）で PoC を 6/20 までに。</li>
-              <li>鈴木：清書モデルを gemma4:26b に確定。所要時間表示は実測 3〜6分に修正。</li>
-            </ul>
-            <h2>■ 保留事項・次回の課題</h2>
-            <ul><li>32B密モデルの要否、iGPU部分オフロードは余力検証。</li></ul>
-            <h2>■ アクションアイテム（担当付き）</h2>
-            <ul><li>[ ] DD-004 起票（佐藤）</li><li>[ ] UI文言の修正（鈴木）</li></ul>
-            <h2>■ 各アジェンダの議論詳細</h2>
-            <ul><li>確定テキスト即表示を主役とする設計で、CPUでも実用的なリアルタイム性が成立する見込み。</li></ul>
+            <template v-for="(sec,si) in mtg.minutes" :key="si">
+              <h2>{{ sec.h }}</h2>
+              <ul><li v-for="(it,ii) in sec.items" :key="ii">{{ it }}</li></ul>
+            </template>
           </q-card-section>
         </q-card>
 
@@ -82,9 +83,9 @@
           <q-expansion-item icon="forum" label="元タイムライン（証跡）" caption="確定文字起こし＋人間メモ">
             <q-separator></q-separator>
             <q-card-section>
-              <q-chat-message name="鈴木（PM）" :text="['来期の予算は基本ラインとして100万円で考えています。']" stamp="10:05" bg-color="grey-2"></q-chat-message>
-              <q-chat-message name="📝人間メモ" :text="['★社長から「最大150万まで決済を出す」と口頭指示あり']" stamp="10:05" sent bg-color="orange-2"></q-chat-message>
-              <q-chat-message name="佐藤（エンジニア）" :text="['了解しました。では150万を上限にプロトタイプを進めます。']" stamp="10:06" bg-color="grey-2"></q-chat-message>
+              <q-chat-message v-for="(e,ei) in mtg.timeline" :key="ei"
+                :name="e.name" :text="[e.text]" :stamp="e.t" :sent="e.memo"
+                :bg-color="e.memo ? 'orange-2' : 'grey-2'"></q-chat-message>
             </q-card-section>
           </q-expansion-item>
         </q-card>
@@ -95,9 +96,85 @@
 <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
 <script>
-const { createApp, ref } = Vue
+const { createApp, ref, computed } = Vue
 const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
-createApp({ setup(){ return { leftDrawer:ref(true), nav:NAV, active:'S-03' } } }).use(Quasar).mount('#q-app')
+
+// 会議ごとの議事録（ダミーデータ）。S-01 から ?id=... で開く。
+const MEETINGS = {
+  'm-youken': {
+    title:'要件レビュー', dateShort:'6/3', date:'2026/06/03(水)', time:'10:00–11:05', dur:'1時間5分', place:'会議室A',
+    participants:['鈴木（PM）','佐藤（エンジニア）'], attachments:['FY26_予算案.xlsx'], model:'gemma4:26b',
+    minutes:[
+      {h:'■ 会議概要', items:['基本設計書(SSOT)のレビューを実施。リアルタイム整形を真実源にしない方針を確認。']},
+      {h:'■ 決定事項（誰が・何を・いつまでに）', items:['佐藤：話者分離は whisper 非依存（pyannote/sherpa-onnx）で PoC を 6/20 までに。','鈴木：清書モデルを gemma4:26b に確定。所要時間表示は実測 3〜6分に修正。']},
+      {h:'■ 保留事項・次回の課題', items:['32B密モデルの要否、iGPU部分オフロードは余力検証。']},
+      {h:'■ アクションアイテム（担当付き）', items:['[ ] DD-004 起票（佐藤）','[ ] UI文言の修正（鈴木）']},
+      {h:'■ 各アジェンダの議論詳細', items:['確定テキスト即表示を主役とする設計で、CPUでも実用的なリアルタイム性が成立する見込み。']},
+    ],
+    timeline:[
+      {name:'鈴木（PM）', t:'10:05', text:'来期の予算は基本ラインとして100万円で考えています。', memo:false},
+      {name:'📝人間メモ', t:'10:05', text:'★社長から「最大150万まで決済を出す」と口頭指示あり', memo:true},
+      {name:'佐藤（エンジニア）', t:'10:06', text:'了解しました。では150万を上限にプロトタイプを進めます。', memo:false},
+    ],
+  },
+  'm-gijutsu': {
+    title:'技術選定MTG', dateShort:'6/9', date:'2026/06/09(火)', time:'14:00–14:50', dur:'50分', place:'オンライン',
+    participants:['鈴木（PM）','佐藤（エンジニア）','田中（デザイナー）'], attachments:['製品仕様_v3.pdf'], model:'gemma4:26b',
+    minutes:[
+      {h:'■ 会議概要', items:['評価期のスタック（faster-whisper / Ollama+Qwen / sounddevice）を確認し、Phase 0 のベンチ方針を合意。']},
+      {h:'■ 決定事項（誰が・何を・いつまでに）', items:['佐藤：live=qwen3:8b / batch=gemma4:26b でベンチ継続。','鈴木：RTF<1 を Phase 0 のゲートに設定。']},
+      {h:'■ 保留事項・次回の課題', items:['STT併走下の tok/s 劣化（16〜51%）の実測は DD-003 で確定。']},
+      {h:'■ アクションアイテム（担当付き）', items:['[ ] DD-003 起票（佐藤）','[ ] 評価指標の表をロードマップへ反映（鈴木）']},
+      {h:'■ 各アジェンダの議論詳細', items:['CPUのメモリ帯域律速のため、既定は STT↔LLM の時間分離とする。']},
+    ],
+    timeline:[
+      {name:'佐藤（エンジニア）', t:'14:03', text:'8bのTTFTが0.39秒で最速でした。', memo:false},
+      {name:'📝人間メモ', t:'14:10', text:'★併走時のtok/s劣化は別途DDで実測する', memo:true},
+      {name:'鈴木（PM）', t:'14:12', text:'では時間分離を既定にしましょう。', memo:false},
+    ],
+  },
+  'm-sprint': {
+    title:'スプリント計画', dateShort:'6/12', date:'2026/06/12(金)', time:'09:30–10:30', dur:'1時間', place:'会議室B',
+    participants:['鈴木（PM）','佐藤（エンジニア）'], attachments:[], model:'gemma4:26b',
+    minutes:[
+      {h:'■ 会議概要', items:['次スプリントの DD候補を棚卸しし、優先度を決定。']},
+      {h:'■ 決定事項（誰が・何を・いつまでに）', items:['佐藤：DD-005（liveパイプライン縦切り）を最優先で着手。']},
+      {h:'■ 保留事項・次回の課題', items:['話者分離PoC（DD-004）はDD-003の結果を見て着手判断。']},
+      {h:'■ アクションアイテム（担当付き）', items:['[ ] DD-005 着手（佐藤・今スプリント）','[ ] バックログ整理（鈴木）']},
+      {h:'■ 各アジェンダの議論詳細', items:['LLM抜きで確定即表示までを先に通し、ドロップ0・キュー有界を確認する方針。']},
+    ],
+    timeline:[
+      {name:'鈴木（PM）', t:'09:35', text:'今スプリントは縦切りを優先しましょう。', memo:false},
+      {name:'佐藤（エンジニア）', t:'09:37', text:'了解です。DD-005から着手します。', memo:false},
+    ],
+  },
+  'm-1on1': {
+    title:'1on1', dateShort:'6/12', date:'2026/06/12(金)', time:'17:00–17:30', dur:'30分', place:'会議室C',
+    participants:['鈴木（PM）','佐藤（エンジニア）'], attachments:[], model:'gemma4:26b',
+    minutes:[
+      {h:'■ 会議概要', items:['進捗の振り返りと負荷状況の確認。']},
+      {h:'■ 決定事項（誰が・何を・いつまでに）', items:['鈴木：ベンチ環境の整備を支援。']},
+      {h:'■ 保留事項・次回の課題', items:['なし']},
+      {h:'■ アクションアイテム（担当付き）', items:['[ ] 来週の予定を共有（鈴木）']},
+      {h:'■ 各アジェンダの議論詳細', items:['ローカルLLM開発は初挑戦のため、段階的に進める方針を再確認。']},
+    ],
+    timeline:[
+      {name:'📝人間メモ', t:'17:05', text:'★負荷は許容範囲。来週も同ペースで', memo:true},
+    ],
+  },
+}
+
+createApp({
+  setup(){
+    const params = new URLSearchParams(location.search)
+    const reqId = params.get('id')
+    const found = !!(reqId && MEETINGS[reqId])
+    const id = found ? reqId : 'm-youken'
+    const mtg = MEETINGS[id]
+    const completedList = Object.entries(MEETINGS).map(([k,v])=>({id:k, title:v.title, dateShort:v.dateShort}))
+    return { leftDrawer:ref(true), nav:NAV, active:'S-03', id, found, mtg, completedList }
+  }
+}).use(Quasar).mount('#q-app')
 </script>
 </body>
 </html>
