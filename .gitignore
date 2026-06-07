@@ -54,3 +54,6 @@ Desktop.ini
 
 # Claude Code（個人設定のみ無視。共有設定 settings.json はコミット可）
 .claude/settings.local.json
+
+# STTベンチ用の録音音声（個人の声・バイナリ。正解テキスト script*.txt は対象外）
+/python/audio/*.wav

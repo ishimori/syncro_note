@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "SynchroniNote - ローカル議事録ツール（評価/MVPハーネス）"
 requires-python = ">=3.13"
 dependencies = [
+    "faster-whisper>=1.2.1",
+    "numpy>=2.4.6",
     "ollama>=0.6.2",
+    "sounddevice>=0.5.5",
 ]
 
 [dependency-groups]
