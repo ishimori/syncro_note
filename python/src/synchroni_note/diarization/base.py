@@ -47,46 +47,44 @@ class Turn:
         return max(0.0, self.offset_s - self.onset_s)
 
 
-# 手法は「音声(np.float32, 16k mono) と サンプリングレート」を受け取り Turn 列を返す。
-DiarizeFn = Callable[[np.ndarray, int], list[Turn]]
+# 手法は「音声(np.float32, 16k mono)・サンプリングレート・想定話者数 k」を受け取り Turn 列を返す。
+DiarizeFn = Callable[[np.ndarray, int, int], list[Turn]]
 
 
-def dummy_single_speaker(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
-    """全有声区間を 1 話者として返す疎通用ベースライン。
+def dummy_single_speaker(audio: np.ndarray, sr: int = SAMPLE_RATE, k: int = 2) -> list[Turn]:
+    """全有声区間を 1 話者として返す疎通用ベースライン（k は無視）。
 
-    話者分離を一切しない最弱ベースライン。2話者音声では「もう一方の話者の発話」が
-    すべて confusion になるため DER は概ね 0.5 前後に出る
-    （＝ハーネスが誤りを正しく数えている確認になる）。
+    話者分離を一切しない最弱ベースライン。多話者音声では他話者の発話がすべて confusion になる。
     """
     spans = detect_voiced_spans(audio, sr=sr)
     return [Turn(onset_s=s / sr, offset_s=e / sr, speaker="spk0") for s, e in spans]
 
 
-def dummy_alternating(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
-    """有声区間を spk0/spk1 と交互に振る疎通用ベースライン。
+def dummy_alternating(audio: np.ndarray, sr: int = SAMPLE_RATE, k: int = 2) -> list[Turn]:
+    """有声区間を spk0..spk{k-1} と循環で振る疎通用ベースライン。
 
-    本素材は実際に交互発話なので、VAD区切りが発話ターンと一致すれば高精度に、
-    ずれれば崩れる。dummy_single_speaker と対で「DERが手法で動く」ことを示す。
+    実発話が概ね順番なら VAD区切りと一致して高精度に、ずれれば崩れる。
+    dummy_single_speaker と対で「DERが手法で動く」ことを示す。
     """
     spans = detect_voiced_spans(audio, sr=sr)
     return [
-        Turn(onset_s=s / sr, offset_s=e / sr, speaker=f"spk{i % 2}")
+        Turn(onset_s=s / sr, offset_s=e / sr, speaker=f"spk{i % max(1, k)}")
         for i, (s, e) in enumerate(spans)
     ]
 
 
-def _simple_cluster(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
+def _simple_cluster(audio: np.ndarray, sr: int = SAMPLE_RATE, k: int = 2) -> list[Turn]:
     # 遅延 import で循環依存を避ける（simple_cluster は base.Turn を参照）
     from synchroni_note.diarization.simple_cluster import simple_cluster
 
-    return simple_cluster(audio, sr)
+    return simple_cluster(audio, sr, k=k)
 
 
-def _onnx_embed(audio: np.ndarray, sr: int = SAMPLE_RATE) -> list[Turn]:
+def _onnx_embed(audio: np.ndarray, sr: int = SAMPLE_RATE, k: int = 2) -> list[Turn]:
     # 遅延 import（onnxruntime/knf を使う手法時のみロード）
     from synchroni_note.diarization.embedding_onnx import embedding_onnx
 
-    return embedding_onnx(audio, sr)
+    return embedding_onnx(audio, sr, k=k)
 
 
 METHODS: dict[str, DiarizeFn] = {

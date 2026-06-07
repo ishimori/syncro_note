@@ -27,6 +27,7 @@ def main() -> None:
         "--turns", type=Path, default=None, help="正解ターンJSON（既定: 音声stem_turns.json）"
     )
     p.add_argument("--method", default="all", help="手法名 or all（既定: all）")
+    p.add_argument("--speakers", type=int, default=2, help="想定話者数 k（既定: 2。sample03は4）")
     p.add_argument("--model", default="medium", help="参照生成のwhisperモデル")
     p.add_argument("--collar", type=float, default=0.25)
     p.add_argument("--build-ref", action="store_true", help="参照RTTMを強制再生成")
@@ -49,14 +50,14 @@ def main() -> None:
     methods = list(METHODS) if args.method == "all" else [args.method]
 
     print(
-        f"\naudio={audio_path.name}  dur={dur_s:.1f}s  "
+        f"\naudio={audio_path.name}  dur={dur_s:.1f}s  k={args.speakers}  "
         f"collar={args.collar}s  ref_turns={len(ref)}"
     )
     print(f"{'method':<10}{'DER':>7}{'miss':>7}{'FA':>7}{'conf':>7}{'spk_ref':>8}{'spk_hyp':>8}{'RTF':>7}")
     for name in methods:
         fn = METHODS[name]
         t0 = time.perf_counter()
-        hyp = fn(audio, SAMPLE_RATE)
+        hyp = fn(audio, SAMPLE_RATE, args.speakers)
         rtf = (time.perf_counter() - t0) / dur_s
         r = der(ref, hyp, collar=args.collar).as_row()
         print(
