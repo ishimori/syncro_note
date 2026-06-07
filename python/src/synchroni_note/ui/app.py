@@ -20,7 +20,42 @@ from synchroni_note.pipeline.cli import DEMO_VOCAB
 from synchroni_note.pipeline.summarize import stream_summarize
 from synchroni_note.pipeline.transcribe import stream_transcribe
 
-SUMMARY_MODELS = ["gemma4:26b", "qwen3:8b", "gemma4:e4b"]
+# (表示ラベル, 実際のモデルID)。ラベルで規模感・用途が分かるようにする。
+SUMMARY_MODELS = [
+    ("gemma4:26b — 高品質・本機最速（おすすめ）", "gemma4:26b"),
+    ("qwen3:8b — 中品質・標準", "qwen3:8b"),
+    ("gemma4:e4b — 軽量・最速・品質は控えめ", "gemma4:e4b"),
+]
+STT_MODELS = [
+    ("medium — 高精度・日本語向き（おすすめ）", "medium"),
+    ("small — 中間（速さ寄り）", "small"),
+    ("base — 高速だが精度は低め", "base"),
+]
+
+MODEL_HELP = """### 🧭 モデルの選び方（迷ったら既定のままでOK）
+
+**「b」= パラメータ数（モデルの規模）。** 大きいほど賢い反面、重く（遅く・メモリ大）なります。
+
+**要約モデル**（書き起こしから議事録の文章を作る）
+
+| 選択肢 | 規模 | 議事録の品質 | 速度 | 使いどころ |
+|---|---|---|---|---|
+| **gemma4:26b**（既定） | 大（260億/MoE） | ◎ 最高 | ◎ 速い | **おすすめ**。大きい割に速い |
+| qwen3:8b | 中（80億） | ○ 良い | △ やや遅い | 26bが使えない時の代替 |
+| gemma4:e4b | 小（軽量） | △ ふつう | ◎ 最速 | メモリ節約・とにかく速く |
+
+→ 本機の実測では **gemma4:26b が品質・速度とも一番**でした。基本これでOK。
+
+**文字起こしモデル**（音声 → テキスト）
+
+| 選択肢 | 日本語の精度 | 速度 | 使いどころ |
+|---|---|---|---|
+| **medium**（既定） | ◎ 高い | △ やや重い | **おすすめ**。実用精度 |
+| small | ○ 中くらい | ○ 速い | 速さ優先でそこそこ |
+| base | △ 低い | ◎ 最速 | 下書き・最速重視（誤りは増える） |
+
+→ 日本語は **medium** で精度が大きく上がります（base は固有名詞の誤りが増加）。迷ったら medium。
+"""
 
 
 def make_minutes(
@@ -112,11 +147,13 @@ def build_demo():
                 agenda = gr.Textbox(label="アジェンダ（任意）", placeholder="例: 進捗共有")
                 with gr.Row():
                     summary_model = gr.Dropdown(
-                        SUMMARY_MODELS, value="gemma4:26b", label="要約モデル"
+                        choices=SUMMARY_MODELS, value="gemma4:26b", label="要約モデル"
                     )
                     stt_model = gr.Dropdown(
-                        ["medium", "base", "small"], value="medium", label="文字起こしモデル"
+                        choices=STT_MODELS, value="medium", label="文字起こしモデル"
                     )
+                with gr.Accordion("🧭 モデルの選び方（クリックで開く）", open=False):
+                    gr.Markdown(MODEL_HELP)
                 btn = gr.Button("議事録を作成", variant="primary")
             with gr.Column(scale=1):
                 info_out = gr.Markdown(value="ここに 音声長・経過時間・トークン数 が出ます。")
