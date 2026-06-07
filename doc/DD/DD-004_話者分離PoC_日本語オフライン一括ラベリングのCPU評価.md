@@ -63,7 +63,7 @@
 ### Phase 1: 評価データと計測ハーネス整備
 - [x] 📐 **実装前詳細化** → 👀 ユーザーレビュー（合意後に実装）: [Phase1詳細設計.md](DD-004/Phase1詳細設計.md)（A方式・モジュール構成・アライン手順・DER計測・テスト観点）
 - [x] **一次素材 sample02 の参照RTTM自動生成**: `script02_turns.json`（10ターン）を `sample02.wav` に forced alignment → `python/audio/sample02.rttm` を自動生成（手動アノテなし）。⚠️ 末尾境界の精度に課題（[結果](DD-004/結果.md)）
-- [ ] **追加素材の手配（残課題・⏸️後回し）**: オーバーラップあり・3〜4話者のクリップを別途用意（[§8 オープン論点](../plan/開発ロードマップ.md#L184)「評価用サンプル音声の準備」と連動）。複数人音声の準備が現状困難なため保留。sample02 の易しさバイアス補正は素材入手後に実施
+- [→] **追加素材の手配**（オーバーラップあり・3〜4話者）は **[DD-004-1] へ継承**（⏸️複数人音声の準備待ちで後回し。[§8 オープン論点](../plan/開発ロードマップ.md)「評価用サンプル音声の準備」と連動）
 - [x] DER計測の実装: `pyannote.metrics` ではなく **numpy 自前実装**（collar・最適対応付け・オフライン優先）。手計算値一致を pytest で検証
 - [x] 🔬 **機械検証**: `uv run --no-sync python -m synchroni_note.bench.diarization_bench --audio audio/sample02.wav --turns audio/script02_turns.json --method all` → DER 出力（dummy 0.577 / dummy-alt 0.538）。ruff通過・pytest 54 passed
 - [x] 😈 **DA批判レビュー**: 参照RTTMの末尾境界ドリフト＋無音を発話扱いした miss 水増しを発見 → Phase 2 冒頭で参照精緻化（[結果 §制約](DD-004/結果.md)）
