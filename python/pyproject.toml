@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 synchroni-note = "synchroni_note.pipeline.cli:main"
 synchroni-note-ui = "synchroni_note.ui.app:main"
+synchroni-note-stream = "synchroni_note.realtime.stream_stt:main"
 
 [dependency-groups]
 dev = [
