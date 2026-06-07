@@ -264,6 +264,103 @@ pub fn list_timeline(conn: &Connection, meeting_id: &str) -> Result<Vec<Timeline
     rows.collect()
 }
 
+// ============ 確認用シードデータ（DD-012-3-1） ============
+
+/// 確認用デモデータを投入する（DD-012-3-1）。**本番起動経路からは呼ばない**（開発・確認時のみ）。
+///
+/// 指定年月（=今日の年月を渡す想定）の**当月内**に、`completed`×3 / `active`×1 / `scheduled`×2
+/// の会議を固定IDで生成する。当月内の固定日（≤24日＝全月で有効）に置くため月境界の日付計算が
+/// 不要で、いつ開いても当月カレンダーに出る（DA#1 陳腐化対策）。完了会議1件には参加者・タイムライン・
+/// 清書済み議事録も付与し、S-03 詳細の確認に使えるようにする。
+///
+/// 固定IDの存在チェックで**冪等**（二重投入しても増えない・DA#3）。FK順（meetings→participants
+/// →timeline_elements）で投入する（DA#4）。
+pub fn seed_demo_data(conn: &Connection, year: i32, month: u32) -> Result<()> {
+    // 既に投入済みなら何もしない（冪等）。
+    if get_meeting(conn, "seed-meeting-1")?.is_some() {
+        return Ok(());
+    }
+    let ym = format!("{:04}-{:02}", year, month);
+
+    // (id, 日, status, title, 清書済み議事録 or None)
+    let specs: [(&str, u32, &str, &str, Option<&str>); 6] = [
+        ("seed-meeting-1", 3, "completed", "キックオフ会議",
+            Some("## 要約\n- プロジェクト方針を確認した。\n\n## 決定事項\n- 開発体制を確定。\n\n## TODO\n- 各自タスクを整理する。")),
+        ("seed-meeting-2", 6, "completed", "設計レビュー",
+            Some("## 要約\n- DB設計をレビューした。\n\n## 決定事項\n- schema.sql を唯一の正とする。\n\n## TODO\n- 実装に着手する。")),
+        ("seed-meeting-3", 9, "completed", "進捗共有",
+            Some("## 要約\n- 各機能の進捗を共有した。\n\n## 決定事項\n- リリース日候補を設定。\n\n## TODO\n- テスト計画を立てる。")),
+        ("seed-meeting-4", 14, "active", "本日の定例", None),
+        ("seed-meeting-5", 19, "scheduled", "リリース判定会議", None),
+        ("seed-meeting-6", 24, "scheduled", "ふりかえり", None),
+    ];
+    for (id, day, status, title, minutes) in specs {
+        let start = format!("{ym}-{day:02}T10:00:00");
+        let done = status == "completed";
+        let m = Meeting {
+            id: id.into(),
+            title: title.into(),
+            agenda: Some(format!("{title} のアジェンダ")),
+            place: Some("会議室A".into()),
+            scheduled_start: start.clone(),
+            scheduled_end: Some(format!("{ym}-{day:02}T11:00:00")),
+            actual_start: if done || status == "active" { Some(start.clone()) } else { None },
+            actual_end: if done { Some(format!("{ym}-{day:02}T11:00:00")) } else { None },
+            status: status.into(),
+            final_minutes: minutes.map(str::to_string),
+            batch_model: minutes.map(|_| "gemma4:26b".to_string()),
+            generation_seconds: minutes.map(|_| 42),
+            audio_path: None,
+            created_at: start.clone(),
+            updated_at: start,
+        };
+        insert_meeting(conn, &m)?;
+    }
+
+    // 参加者は完了会議(seed-meeting-1)に付与（meetings の後＝FK順）。
+    for (id, name, role, order) in [
+        ("seed-part-1", "田中", "司会", 0_i64),
+        ("seed-part-2", "鈴木", "開発", 1),
+    ] {
+        insert_participant(
+            conn,
+            &Participant {
+                id: id.into(),
+                meeting_id: "seed-meeting-1".into(),
+                name: name.into(),
+                role: Some(role.into()),
+                voice_hint: None,
+                sort_order: Some(order),
+            },
+        )?;
+    }
+
+    // タイムライン（AI文字起こし＋人間メモ）を seed-meeting-1 に付与。
+    for (seq, kind, speaker, t_ms, text) in [
+        (0_i64, "ai_transcription", Some(1_i64), 1000_i64, "本日はお集まりいただきありがとうございます。"),
+        (1, "ai_transcription", Some(2), 5000, "資料の3ページ目から説明します。"),
+        (2, "human_memo", None, 8000, "※要フォロー: 予算確認"),
+        (3, "ai_transcription", Some(1), 12000, "では次回までに各自整理しましょう。"),
+    ] {
+        insert_timeline_element(
+            conn,
+            &TimelineElement {
+                id: format!("seed-tl-{seq}"),
+                meeting_id: "seed-meeting-1".into(),
+                seq,
+                kind: kind.into(),
+                speaker_id: speaker,
+                t_ms,
+                text_raw: text.into(),
+                text_refined: None,
+                is_refined: false,
+                created_at: format!("{ym}-03T10:00:00"),
+            },
+        )?;
+    }
+    Ok(())
+}
+
 // ============ tests ============
 
 #[cfg(test)]
@@ -388,6 +485,54 @@ mod tests {
             created_at: "2026-06-08T10:00:00".into(),
         };
         assert!(insert_timeline_element(&conn, &orphan).is_err());
+    }
+
+    fn status_counts(conn: &Connection, year: i32, month: u32) -> (usize, usize, usize) {
+        let ms = list_meetings_by_month(conn, year, month).unwrap();
+        let c = |s: &str| ms.iter().filter(|m| m.status == s).count();
+        (c("completed"), c("active"), c("scheduled"))
+    }
+
+    #[test]
+    fn seed_inserts_expected_distribution_in_target_month() {
+        let conn = open_in_memory().unwrap();
+        seed_demo_data(&conn, 2026, 6).unwrap();
+        let ms = list_meetings_by_month(&conn, 2026, 6).unwrap();
+        assert_eq!(ms.len(), 6);
+        assert_eq!(status_counts(&conn, 2026, 6), (3, 1, 2)); // completed/active/scheduled
+        assert!(ms.iter().all(|m| m.scheduled_start.starts_with("2026-06"))); // 全件当月
+    }
+
+    #[test]
+    fn seed_is_idempotent() {
+        let conn = open_in_memory().unwrap();
+        seed_demo_data(&conn, 2026, 6).unwrap();
+        seed_demo_data(&conn, 2026, 6).unwrap(); // 二重投入
+        assert_eq!(list_meetings_by_month(&conn, 2026, 6).unwrap().len(), 6); // 増えない
+    }
+
+    #[test]
+    fn seed_works_for_february_short_month() {
+        // 固定日(≤24)が全月で有効＝2月でも破綻しないことを担保。
+        let conn = open_in_memory().unwrap();
+        seed_demo_data(&conn, 2026, 2).unwrap();
+        let ms = list_meetings_by_month(&conn, 2026, 2).unwrap();
+        assert_eq!(ms.len(), 6);
+        assert!(ms.iter().all(|m| m.scheduled_start.starts_with("2026-02")));
+    }
+
+    #[test]
+    fn seed_attaches_participants_and_timeline_and_minutes() {
+        let conn = open_in_memory().unwrap();
+        seed_demo_data(&conn, 2026, 6).unwrap();
+        // 完了会議に参加者2名・タイムライン4件（seq昇順）・清書済み議事録。
+        assert_eq!(list_participants(&conn, "seed-meeting-1").unwrap().len(), 2);
+        let tl = list_timeline(&conn, "seed-meeting-1").unwrap();
+        assert_eq!(tl.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        assert!(tl.iter().any(|e| e.kind == "human_memo")); // メモも混在
+        let m = get_meeting(&conn, "seed-meeting-1").unwrap().unwrap();
+        assert!(m.final_minutes.is_some());
+        assert_eq!(m.batch_model.as_deref(), Some("gemma4:26b"));
     }
 
     #[test]
