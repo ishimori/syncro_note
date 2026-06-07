@@ -21,6 +21,7 @@ synchroni-note-stream = "synchroni_note.realtime.stream_stt:main"
 dev = [
     "ruff>=0.8",
     "pytest>=8",
+    "psutil>=7",
 ]
 
 [build-system]

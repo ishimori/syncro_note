@@ -71,12 +71,19 @@ def average(results: list[BenchResult]) -> BenchResult:
     )
 
 
-def run_once(model: str, prompt: str, *, think: bool = False) -> BenchResult:
-    """1回だけ生成を実行し、メトリクスを返す。"""
+def run_once(
+    model: str, prompt: str, *, think: bool = False, keep_alive: int | None = None
+) -> BenchResult:
+    """1回だけ生成を実行し、メトリクスを返す。
+
+    keep_alive: Ollama のモデル常駐秒数。-1=常駐 / 0=即退避 / None=既定（DD-006で利用）。
+    """
     start = time.perf_counter()
     ttft: float | None = None
     final = None
-    for chunk in ollama.generate(model=model, prompt=prompt, stream=True, think=think):
+    for chunk in ollama.generate(
+        model=model, prompt=prompt, stream=True, think=think, keep_alive=keep_alive
+    ):
         if ttft is None and chunk.response:
             ttft = time.perf_counter() - start
         if chunk.done:
