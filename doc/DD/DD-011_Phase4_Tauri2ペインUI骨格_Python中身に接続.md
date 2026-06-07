@@ -17,10 +17,10 @@
 
 **Phase 3 の3分割（2026-06-08 再編・ユーザー合意）**:
 - **3-A 全画面シェル確定** … ✅**完了**。S-01〜S-08の静的骨格＋共有ナビ（`AppNav`・WIPバッジ・現在地ハイライト）＋`vue-router`（ハッシュ履歴）を確定。`npm run dev`(vite)配信＋**Playwrightで全8画面を目視確認**（静的＝Playwright可）。証跡 `DD-011/phase3a-s0*.png`。補助スクリプト `scripts/{start,stop,build}-app.sh` も追加。
-- **3-B Python実行口** … ⏳未着手。`sidecar.py` を追加し `uv run` で **JSON Lines 逐次出力を CLI 単体確認**（Tauri不要で区切れる）。
+- **3-B Python実行口** … ✅**完了**。`sidecar.py` を追加し、`uv run` で **JSON Lines 逐次出力を CLI 単体確認**（sample01.wav→meta1+segment12+done1、全行JSON・seq連番・count一致／異常系=error行＋exit1／ruff通過）。
 - **3-C Rust中継＋S-05ライブ配線** … ⏳未着手。Rust spawn＋stdout中継＋kill／フロント listen＋timeline push＋ダミー撤去。**実ウィンドウで逐次表示**を確認（Tauriランタイム依存＝Playwright不可）。
 
-> 3-B/3-C の📐実装前詳細化は [DD-011/Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)（サイドカー契約＝JSON Lines／Python実行口／Rust spawn＋イベント中継）に記載済み。Phase 0 DA #1〜4（配布時同梱は別DD／UTF-8／unbuffered／子プロセスkill）を織り込み済み。**次回の入口＝3-B**。
+> 3-B/3-C の📐実装前詳細化は [DD-011/Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)（サイドカー契約＝JSON Lines／Python実行口／Rust spawn＋イベント中継）に記載済み。Phase 0 DA #1〜4（配布時同梱は別DD／UTF-8／unbuffered／子プロセスkill）を織り込み済み。**次回の入口＝3-C**。
 
 > 確立した運用: **UIの目視確認は Playwright で `localhost:1420` を開いてClaude自身が行う**（CLAUDE.md「UI確認」節／メモリ `tauri-ui-verify-playwright`）。
 
@@ -149,9 +149,11 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 - [x] 👁 **目視確認**: `npm run dev`(vite)配信＋Playwrightで**全8画面**を確認（静的のためPlaywright可）。崩れ・破綻なし。証跡 `DD-011/phase3a-s01〜s08.png`
 - [x] 😈 **DA批判レビュー** → [Phase 3-A DA批判レビュー](#phase-3-a-da批判レビュー)
 
-#### Phase 3-B: Python実行口（サイドカー）⏳
-- [ ] `python/src/synchroni_note/pipeline/sidecar.py` を追加（既存 `stream_transcribe` を **JSON Lines で逐次stdout**。`sys.stdout` をUTF-8化＋各行 `flush`）
-- [ ] 🔬 **機械検証**: `uv run python -m synchroni_note.pipeline.sidecar <wav>` で `meta`→`segment`×N→`done` が**1行ずつ**出る（Tauri不要のCLI単体確認）
+#### Phase 3-B: Python実行口（サイドカー）✅
+- [x] `python/src/synchroni_note/pipeline/sidecar.py` を追加（既存 `stream_transcribe` を **JSON Lines で逐次stdout**。`sys.stdout` をUTF-8化＋各行 `flush`＝DA#2/#3。stdoutはJSON専用・ログ/トレースはstderr＝DA-新3）。ruff check/format 通過
+- [x] 🔬 **機械検証（正常系）**: `uv run python -m synchroni_note.pipeline.sidecar audio/sample01.wav --model base` → `meta`(duration_s=70.0)→`segment`×12（seq0..11・日本語化けなし）→`done`(count=12, elapsed_s≈4.4) が**1行ずつ**。自動検証で「全行JSON・seq連番・count一致」を確認
+- [x] 🔬 **機械検証（異常系）**: 存在しないwav→`error`行1つ＋**exit 1**、トレースはstderr（stdout汚染なし）
+- [x] 😈 **DA批判レビュー** → [Phase 3-B DA批判レビュー](#phase-3-b-da批判レビュー)
 
 #### Phase 3-C: Rust中継＋S-05ライブ配線（実ウィンドウ）⏳
 > **設計入力（Phase 2 コードレビュー由来・厳選／3-Cで反映）**: ①**タイムラインは `q-virtual-scroll`**（長時間会議で数千件→全DOM常駐はCPU負担。本機はCPUのみでSTT/LLMとCPUを食い合う）②**話者割当メニューは行ごとでなく共有1個**③**v-forのkeyはバックエンド採番の安定IDを使う**（末尾追加だけなら現状の index key でも実害ないが、時刻順挿入/後追い整形が入ると壊れる）。その他の指摘（deep reactive→shallow化, displayName毎回呼び, CSS/アイコン全読み, デモ時刻のslice 等）は時期尚早/難癖/使い捨てデモのため**対応不要**。
@@ -166,6 +168,7 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 - **異常終了からの復旧 ＋ Phase 3 を3分割に再編**。前回セッションが Phase 3 着手前後で異常終了。調査の結果、中断時の作業は設計書（サイドカー）とは別の「**全画面シェル化**」で、**コードは完成しビルドも通る**状態だった（未確認・未コミット）。成果＝S-01〜S-08の静的骨格＋共有ナビ(`AppNav`)＋`vue-router`＋補助スクリプト3本。設計書（[Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)）＝サイドカーは未着手のまま（=新3-B/3-C）。
 - **Phase 3-A 完了**。`npm run dev`(vite)配信＋Playwrightで**全8画面を目視確認**（静的のためPlaywright可。Tauriランタイム依存部は無し）。崩れ・破綻なし、ナビの現在地ハイライトも反応＝ルーター結線OK。証跡 `DD-011/phase3a-s01〜s08.png`。工程が多いため Phase 3 を **3-A（画面シェル確定）/3-B（Python実行口・CLI確認）/3-C（Rust中継＋ライブ配線・実ウィンドウ）** に再編（ユーザー合意）。次回入口＝3-B。
 - **DA（3-A）2件**: ①各画面が自前の `leftDrawer`＋`<AppNav>` を持つため、ドロワー開閉状態が画面遷移でリセット（desktopは `show-if-above` 常時表示で実害ほぼ無し）②8画面で `q-layout`/ヘッダ雛形が重複（将来の共有レイアウト化候補）。＋③モック固定値（「今日=7日」等）の陳腐化は3-C以降の実データ接続で撤去。いずれも低優先で記録のみ。詳細は[Phase 3-A DA批判レビュー](#phase-3-a-da批判レビュー)。
+- **Phase 3-B 完了**。Python実行口 `sidecar.py` を追加（既存 `stream_transcribe` を JSON Lines で逐次stdout、UTF-8/各行flush、stdout=JSON専用・ログ/トレース=stderr）。`uv run ... audio/sample01.wav --model base` で **meta→segment×12→done が1行ずつ**・全行JSON・seq連番・count一致を自動検証。異常系=`error`行＋exit1も確認。ruff通過。**次=3-C（Rust中継＋S-05ライブ配線・実ウィンドウ）**。DA(3-B)2件: ①`meta`はモデル読込＋音声decode後に出る＝medium初回は数〜数十秒の"準備中"が続く（DA-新1の実体／3-Cでスピナーに集約）②whisperスレッド数がコード既定8と設定モック(4)で不一致＝設定連携時に統一。詳細は[Phase 3-B DA批判レビュー](#phase-3-b-da批判レビュー)。
 
 ### 2026-06-07
 - **Phase 0 実施**。詳細化トリガー判定（Phase 1・3=詳細化要）。DA 5件記録（最重要=製品配布時のPython同梱→別DD分離。Windows文字化け/バッファリング/ゾンビプロセス/Quasar非公式モードは各Phase詳細化で対応）。
@@ -219,3 +222,12 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 | 1 | **ドロワー開閉状態が画面ごとに独立**: 各画面が自前の `leftDrawer` ref＋`<AppNav>` を持つため、片方で閉じても遷移先で再び開く（状態が画面間で非共有） | 低 | 窓幅を狭めて S-01 のナビを閉じる→S-02 へ遷移→ナビが再表示される | 構造（状態の所在） | desktopは `show-if-above` で常時表示のため実害ほぼ無し。折りたたみ式ナビを正式採用する段で、ドロワー状態を上位（`App.vue`/簡易ストア）へ集約する |
 | 2 | **q-layout/ヘッダ雛形の重複**: 8画面で `q-layout`＋ヘッダ＋`<AppNav>` の足場が重複 | 低 | 各 `S0*.vue` 冒頭の template が類似 | 重複（DRY） | 各画面でヘッダ内容が異なるため現状は許容。共通部分が増えた時点で共有レイアウト（`<AppShell>`）へ抽出 |
 | 3 | **モックの固定値が陳腐化**: 「今日=7日」やダミー日付がハードコード（`S01Calendar.vue` `todayDay=7`） | 低 | 実日付に依存せず常に 6/7 が"今日" | モック前提 | 静的モックの意図的固定。3-C 以降の実データ/実時計接続で撤去（各画面冒頭コメントに「実データ接続は後フェーズ」と明記済み） |
+
+### Phase 3-B DA批判レビュー
+
+**DA観点:** （薄い中継層の隠れ遅延／契約の取りこぼし）
+
+| # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
+|---|-------------------|--------|----------------------|--------|------|
+| 1 | **`meta` がモデル読込＋音声decode後にしか出ない**: `meta` は「最初の合図」だが、`WhisperModel` 構築と `info.duration`（decode要）の後に emit される。base は速いが **medium 初回は数〜数十秒**「準備中」が続く | 中 | medium 指定で起動→最初の数十秒 stdout が無音 | 隠れ遅延（DA-新1の実体） | 3-C で UI は `meta` 受信まで「文字起こし準備中」スピナーに集約。さらに早い合図が要るなら `WhisperModel` 構築前に `starting` 行を足す案を将来検討 |
+| 2 | **whisper スレッド数の不一致**: コード既定 `threads=8`（transcribe.py）に対し設定モック S-08 は `whisper n_threads=4`。sidecar はスレッドを引数化せず常に既定8 | 低 | sidecar 起動時のスレッドは常に8固定 | 設定連携の取りこぼし | 設定→sidecar のスレッド受け渡しは設定永続化を実装する段（別フェーズ）で統一。3-B では既定のままで可 |
