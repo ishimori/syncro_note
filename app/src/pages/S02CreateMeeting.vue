@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// S-02 会議作成・事前登録 — Phase 2: 静的骨格（見た目＋ローカル操作のみ）。
+// S-02 会議作成・事前登録 — DD-012-3 Phase 2: 作成→SQLite保存→カレンダー(S-01)へ。
 // 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-02_create-meeting.html。
 // ここで入力した前提（参加者・アジェンダ・用語・資料）が、リアルタイム補正と
-// 終了後の清書プロンプトに渡る。保存/開始は Phase 3 で実データ接続する。
+// 終了後の清書プロンプトに渡る。本フェーズでは基本情報＋参加者を `meetings`/`participants` に保存する。
+//   id・各時刻は frontend で確定して渡す（Rust DB層の純関数設計に合わせる）。
 import { ref, reactive } from "vue";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
+import { createMeeting, localIso, type Meeting, type Participant as DbParticipant } from "../api";
 
 const router = useRouter();
 
@@ -47,6 +49,67 @@ const removeParticipant = (i: number): void => {
 
 // 専門用語辞書
 const vocab = ref<string[]>(["Qwen", "Tauri", "SQLite", "SynchroniNote"]);
+
+// 保存処理
+const saving = ref(false);
+const errorMsg = ref("");
+
+// "2026/06/18" + "13:00" → ローカルISO "2026-06-18T13:00:00"（月フィルタが前方一致のため無TZ）。
+const toIso = (time: string): string | null => {
+  const d = date.value.replace(/\//g, "-");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const t = /^\d{2}:\d{2}$/.test(time) ? `${time}:00` : "00:00:00";
+  return `${d}T${t}`;
+};
+
+const save = async (): Promise<void> => {
+  if (!title.value) {
+    errorMsg.value = "会議名は必須です";
+    return;
+  }
+  const scheduledStart = toIso(start.value);
+  if (!scheduledStart) {
+    errorMsg.value = "日付は YYYY/MM/DD で入力してください";
+    return;
+  }
+  saving.value = true;
+  errorMsg.value = "";
+  try {
+    const now = localIso();
+    const id = crypto.randomUUID();
+    const meeting: Meeting = {
+      id,
+      title: title.value,
+      agenda: agenda.value || null,
+      place: place.value || null,
+      scheduled_start: scheduledStart,
+      scheduled_end: toIso(end.value),
+      actual_start: null,
+      actual_end: null,
+      status: "scheduled",
+      final_minutes: null,
+      batch_model: null,
+      generation_seconds: null,
+      audio_path: null,
+      created_at: now,
+      updated_at: now,
+    };
+    const ps: DbParticipant[] = participants.map((p, i) => ({
+      id: crypto.randomUUID(),
+      meeting_id: id,
+      name: p.name,
+      role: p.role || null,
+      voice_hint: p.voice || null,
+      sort_order: i,
+    }));
+    await createMeeting(meeting, ps);
+    router.push("/s01"); // 保存できたらカレンダーへ（当月なら即表示される）
+  } catch (e) {
+    errorMsg.value = String(e);
+  } finally {
+    saving.value = false;
+  }
+};
 </script>
 
 <template>
@@ -200,9 +263,22 @@ const vocab = ref<string[]>(["Qwen", "Tauri", "SQLite", "SynchroniNote"]);
           </q-card-section>
         </q-card>
 
+        <q-banner v-if="errorMsg" dense rounded class="bg-orange-2 q-mb-md text-orange-10">
+          <template v-slot:avatar><q-icon name="warning" color="orange-9" /></template>
+          保存に失敗しました（Tauri ランタイム上で実行していますか？）: {{ errorMsg }}
+        </q-banner>
+
         <div class="row q-gutter-sm justify-end q-mb-xl">
           <q-btn flat no-caps label="キャンセル" @click="router.push('/s01')" />
-          <q-btn outline no-caps color="primary" icon="save" label="保存して予約" @click="router.push('/s01')" />
+          <q-btn
+            outline
+            no-caps
+            color="primary"
+            icon="save"
+            label="保存して予約"
+            :loading="saving"
+            @click="save"
+          />
           <q-btn
             unelevated
             no-caps
