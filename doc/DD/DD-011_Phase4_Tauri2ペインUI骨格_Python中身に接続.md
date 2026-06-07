@@ -2,7 +2,7 @@
 
 | 作成日 | 更新日 | ステータス |
 |--------|--------|------------|
-| 2026-06-07 | 2026-06-08 | 進行中 |
+| 2026-06-07 | 2026-06-08 | 進行中（Phase 3 完了。次=Phase 4 or 別DD） |
 
 > アプローチ: 標準（探索的実装）。画面の「見た目の合意」は DD-009（[doc/spec/画面設計書.md](../spec/画面設計書.md)）＋ HTMLモック（[doc/mock/html/](../mock/html/)）で確定済みのため、本DDは**雛形作成＋中身（Python）との疎通**という振る舞い中心の作業。
 
@@ -13,14 +13,14 @@
 | Phase 0 事前精査 | ✅完了 | 詳細化判定（P1/P3=要）・DA 5件（最重要=配布時Python同梱→別DD） |
 | Phase 1 Tauri+Quasar雛形 | ✅完了 | `app/`（Tauri2+Vue+TS+Quasar）。ウィンドウ起動・ボタン操作までユーザー目視OK |
 | Phase 2 画面骨格（静的） | ✅完了→**全8画面へ拡張** | 当初S-05のみ→**S-01〜S-08の全画面＋共有ナビ＋ルーター**へ拡張（下記 Phase 3-A で確定）。`app/src/pages/S0*.vue`／`components/AppNav.vue`／`router/index.ts` |
-| **Phase 3 Python中身に接続** | 🔁**3分割に再編** | 工程が多いため 3-A/3-B/3-C に分割（下記「Phase 3」節）。**3-A=✅完了** / 3-B・3-C=未着手 |
+| **Phase 3 Python中身に接続** | ✅**完了**（3-A/3-B/3-C 全完了） | 工程が多いため 3-A/3-B/3-C に分割（下記「Phase 3」節）。**3-A/3-B/3-C すべて✅完了**。実ウィンドウで「サンプルを流す」→ 左タイムラインに文字起こしが1行ずつ表示、閉じると裏方プロセス残存なしまで実測確認 |
 
 **Phase 3 の3分割（2026-06-08 再編・ユーザー合意）**:
 - **3-A 全画面シェル確定** … ✅**完了**。S-01〜S-08の静的骨格＋共有ナビ（`AppNav`・WIPバッジ・現在地ハイライト）＋`vue-router`（ハッシュ履歴）を確定。`npm run dev`(vite)配信＋**Playwrightで全8画面を目視確認**（静的＝Playwright可）。証跡 `DD-011/phase3a-s0*.png`。補助スクリプト `scripts/{start,stop,build}-app.sh` も追加。
 - **3-B Python実行口** … ✅**完了**。`sidecar.py` を追加し、`uv run` で **JSON Lines 逐次出力を CLI 単体確認**（sample01.wav→meta1+segment12+done1、全行JSON・seq連番・count一致／異常系=error行＋exit1／ruff通過）。
-- **3-C Rust中継＋S-05ライブ配線** … ⏳未着手。Rust spawn＋stdout中継＋kill／フロント listen＋timeline push＋ダミー撤去。**実ウィンドウで逐次表示**を確認（Tauriランタイム依存＝Playwright不可）。
+- **3-C Rust中継＋S-05ライブ配線** … ✅**完了**。Rust `start_transcription` で sidecar を spawn＋stdout を reader スレッドで1行ずつ読み `stt-meta/segment/done/error` を emit＋`Child` 保持でウィンドウ破棄時に **taskkill /T でツリーごと kill**（DA-新4を実装で解消）。フロント S-05 は4イベントを listen→`timeline.push`、開始ボタン／準備中スピナー／mm:ss／ダミー撤去。**実ウィンドウで実測**：「サンプルを流す」→ meta+segment×11+done が1行ずつ左タイムラインに表示（日本語化けなし）→「完了（11件）」。閉じると taskkill ツリーkillが発火し uv/python 残存なし（exit 0・実測）。
 
-> 3-B/3-C の📐実装前詳細化は [DD-011/Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)（サイドカー契約＝JSON Lines／Python実行口／Rust spawn＋イベント中継）に記載済み。Phase 0 DA #1〜4（配布時同梱は別DD／UTF-8／unbuffered／子プロセスkill）を織り込み済み。**次回の入口＝3-C**。
+> 3-B/3-C の📐実装前詳細化は [DD-011/Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)（全体）＋ [DD-011/Phase3C_実装前詳細化.md](DD-011/Phase3C_実装前詳細化.md)（3-C限定の確定API・検証手段）。Phase 0 DA #1〜4（配布時同梱は別DD／UTF-8／unbuffered／子プロセスkill）を織り込み済み。**Phase 3 完了**。
 
 > 確立した運用: **UIの目視確認は Playwright で `localhost:1420` を開いてClaude自身が行う**（CLAUDE.md「UI確認」節／メモリ `tauri-ui-verify-playwright`）。
 
@@ -155,16 +155,18 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 - [x] 🔬 **機械検証（異常系）**: 存在しないwav→`error`行1つ＋**exit 1**、トレースはstderr（stdout汚染なし）
 - [x] 😈 **DA批判レビュー** → [Phase 3-B DA批判レビュー](#phase-3-b-da批判レビュー)
 
-#### Phase 3-C: Rust中継＋S-05ライブ配線（実ウィンドウ）⏳
+#### Phase 3-C: Rust中継＋S-05ライブ配線（実ウィンドウ）✅
 > **設計入力（Phase 2 コードレビュー由来・厳選／3-Cで反映）**: ①**タイムラインは `q-virtual-scroll`**（長時間会議で数千件→全DOM常駐はCPU負担。本機はCPUのみでSTT/LLMとCPUを食い合う）②**話者割当メニューは行ごとでなく共有1個**③**v-forのkeyはバックエンド採番の安定IDを使う**（末尾追加だけなら現状の index key でも実害ないが、時刻順挿入/後追い整形が入ると壊れる）。その他の指摘（deep reactive→shallow化, displayName毎回呼び, CSS/アイコン全読み, デモ時刻のslice 等）は時期尚早/難癖/使い捨てデモのため**対応不要**。
-- [ ] Rust(Tauri): `start_transcription` で sidecar を **spawn**、stdout を1行ずつ読んで `stt-meta/segment/done/error` で **emit**、`Child` 保持でウィンドウ破棄時に **kill**（DA#4・新4）
-- [ ] フロント(S-05): 4イベントを `listen`→`timeline.push`、**開始ボタン**追加、ダミー4件＋生成中チャンクを**撤去**
-- [ ] 🔬 **機械検証**: サンプル音声（[python/audio/](../../python/audio/)）→**左ペインに逐次表示**（実ウィンドウ・Playwright不可）。ウィンドウを閉じて**子プロセス残存なし**を確認
-- [ ] 😈 **DA批判レビュー（最低1件）**
+> **注**: ①〜③（virtual-scroll/共有メニュー/安定ID）は本3-Cでは**未対応のまま見送り**（疎通優先・本DD範囲外）。実会議の長時間データを積む段で対応する別DD候補として残す。本3-Cは「経路が通ること」を最優先（DoD通り）。
+- [x] Rust(Tauri): `start_transcription` で sidecar を **spawn**、stdout を reader スレッドで1行ずつ読んで `stt-meta/segment/done/error` で **emit**（各 emit に `eprintln!` 検証ログ）、`Child` 保持でウィンドウ破棄時に **taskkill /T でツリーごと kill**（DA#4・新4＝実装で解消）。`uv` は `CREATE_NO_WINDOW`＋`current_dir(<repo>/python)`＋`PYTHONUTF8=1`。[app/src-tauri/src/lib.rs](../../app/src-tauri/src/lib.rs)
+- [x] フロント(S-05): 4イベントを `listen`→`timeline.push`、**開始ボタン**「サンプルを流す」追加、**準備中スピナー**（meta受信まで＝DA-新1）／mm:ss整形／完了・エラー表示、ダミー4件＋生成中チャンクを**撤去**、素ブラウザ(Tauri不在)はボタン無効化。[app/src/pages/S05Realtime.vue](../../app/src/pages/S05Realtime.vue)
+- [x] 🔬 **機械検証**: 実ウィンドウで「サンプルを流す」→ Rustコンソールに `[stt] emit stt-meta`→`stt-segment`×11→`stt-done`→`stdout closed`、S-05左タイムラインに **meta+11件が1行ずつ**表示（日本語化けなし・mm:ss・unrefinedバッジ・完了11件）。ウィンドウを閉じる→`taskkill tree pid=… -> exit code: 0` 発火、**uv/python 残存なし**を実測（mid-flightクローズでも孫reap）。証跡 `DD-011/phase3c-*.png`
+- [x] 😈 **DA批判レビュー** → [Phase 3-C DA批判レビュー](#phase-3-c-da批判レビュー)
 
 ## ログ
 
 ### 2026-06-08
+- **Phase 3-C 完了（Rust中継＋S-05ライブ配線・実ウィンドウ実測）＝Phase 3 全完了**。Rust `start_transcription` が `uv run python -m …sidecar` を spawn し、stdout を reader スレッドで1行ずつ読んで `stt-meta/segment/done/error` を emit、フロント S-05 が listen→`timeline.push`。**実ウィンドウで実測**：「サンプルを流す」→ `[stt] emit stt-meta`→`stt-segment`×11→`stt-done`がコンソールに出、左タイムラインに meta+11件が1行ずつ表示（日本語化けなし／mm:ss／unrefinedバッジ／「完了（11件）」／準備中スピナー）。ダミー4件＋生成中チャンクは撤去。**後始末**：ウィンドウを閉じると `kill_sidecar` が発火、`child.kill()`（uvのみ）では孫pythonが残る恐れ（DA-新4）→ **`taskkill /T /F /PID` でプロセスツリーごとkill** に格上げし、mid-flightクローズでも uv/python 残存なし（exit 0）を実測。**検証手段の確立**：Playwright不可のため `scripts/{shot-window,click,uia}.ps1` を新設（AttachThreadInputで前面化→画面矩形を実ピクセルキャプチャ＝WebView2のGPU合成でも空白にならない／座標クリック）。既定ウィンドウが 800×600 で左ナビが折りたたみ＆狭い→ `tauri.conf.json` を **1200×800・center** に拡大（§6の指摘を実装）。次=Phase 4(同時編集/Rust移植)系は後続DD、マイク収音・話者分離・LLM整形・配布時Python同梱も各別DD。DA(3-C)→ [Phase 3-C DA批判レビュー](#phase-3-c-da批判レビュー)。
 - **異常終了からの復旧 ＋ Phase 3 を3分割に再編**。前回セッションが Phase 3 着手前後で異常終了。調査の結果、中断時の作業は設計書（サイドカー）とは別の「**全画面シェル化**」で、**コードは完成しビルドも通る**状態だった（未確認・未コミット）。成果＝S-01〜S-08の静的骨格＋共有ナビ(`AppNav`)＋`vue-router`＋補助スクリプト3本。設計書（[Phase3_実装前詳細化.md](DD-011/Phase3_実装前詳細化.md)）＝サイドカーは未着手のまま（=新3-B/3-C）。
 - **Phase 3-A 完了**。`npm run dev`(vite)配信＋Playwrightで**全8画面を目視確認**（静的のためPlaywright可。Tauriランタイム依存部は無し）。崩れ・破綻なし、ナビの現在地ハイライトも反応＝ルーター結線OK。証跡 `DD-011/phase3a-s01〜s08.png`。工程が多いため Phase 3 を **3-A（画面シェル確定）/3-B（Python実行口・CLI確認）/3-C（Rust中継＋ライブ配線・実ウィンドウ）** に再編（ユーザー合意）。次回入口＝3-B。
 - **DA（3-A）2件**: ①各画面が自前の `leftDrawer`＋`<AppNav>` を持つため、ドロワー開閉状態が画面遷移でリセット（desktopは `show-if-above` 常時表示で実害ほぼ無し）②8画面で `q-layout`/ヘッダ雛形が重複（将来の共有レイアウト化候補）。＋③モック固定値（「今日=7日」等）の陳腐化は3-C以降の実データ接続で撤去。いずれも低優先で記録のみ。詳細は[Phase 3-A DA批判レビュー](#phase-3-a-da批判レビュー)。
@@ -231,3 +233,15 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 |---|-------------------|--------|----------------------|--------|------|
 | 1 | **`meta` がモデル読込＋音声decode後にしか出ない**: `meta` は「最初の合図」だが、`WhisperModel` 構築と `info.duration`（decode要）の後に emit される。base は速いが **medium 初回は数〜数十秒**「準備中」が続く | 中 | medium 指定で起動→最初の数十秒 stdout が無音 | 隠れ遅延（DA-新1の実体） | 3-C で UI は `meta` 受信まで「文字起こし準備中」スピナーに集約。さらに早い合図が要るなら `WhisperModel` 構築前に `starting` 行を足す案を将来検討 |
 | 2 | **whisper スレッド数の不一致**: コード既定 `threads=8`（transcribe.py）に対し設定モック S-08 は `whisper n_threads=4`。sidecar はスレッドを引数化せず常に既定8 | 低 | sidecar 起動時のスレッドは常に8固定 | 設定連携の取りこぼし | 設定→sidecar のスレッド受け渡しは設定永続化を実装する段（別フェーズ）で統一。3-B では既定のままで可 |
+
+### Phase 3-C DA批判レビュー
+
+**DA観点:** （子プロセス寿命のWindows特有罠／実ウィンドウ検証の手段／疎通優先で見送った負債）
+
+| # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
+|---|-------------------|--------|----------------------|--------|------|
+| 1 | **孫プロセス(python/whisper)が残る**: `Child::kill()` は直接の子 `uv` しか終了させず、`uv run python` の **孫 python は orphan 化**してCPU/メモリを占有しうる（DA-新4の実体）。録音中に閉じると顕著 | 中 | mid-flightで閉じる→`child.kill()`だけだと python が残存 | プロセス寿命（Windows特有） | ✅**実装で解消**: `kill_sidecar` を `taskkill /T /F /PID <pid>` の**プロセスツリーkill**へ格上げ。mid-flightクローズでも uv+python が消える（exit 0・残存なし）を実測。`#[cfg(not(windows))]` は従来 `child.kill()` |
+| 2 | **実ウィンドウ検証の手段が未確立**: Playwright は Tauri ランタイム非搭載で invoke/listen が動かず、ボタン操作・イベント受信を自走確認できない | 中 | S-05でボタンをPlaywrightから押せない | 検証可能性 | ✅`scripts/{shot-window,click,uia}.ps1` を新設。**AttachThreadInput で前面化→画面矩形を実ピクセルキャプチャ**（PrintWindow不要＝WebView2のGPU合成でも空白にならない）＋座標クリック。UIAはWebView2のDOMを外部へ非公開（窓枠ボタンのみ）→座標方式を採用。Rustの `eprintln!` ログが**最も確実な一次信号**（emit回数で経路を確認） |
+| 3 | **既定ウィンドウ 800×600 が狭い／左ナビが折りたたみ**: 標準モニタでも `q-drawer show-if-above` の閾値に届かずナビが出ない・主役が窮屈 | 低 | 800幅起動→左ナビ非表示 | UX/検証のしやすさ | ✅`tauri.conf.json` を **1200×800・center** へ（§6の指摘を実装）。マルチモニタ混在DPIでウィンドウが復元位置へスナップ→座標ずれが起きるため、検証中は一時的に `/`→`/s05` リダイレクトで直接起動しナビ依存を排除した（検証後 `/s01` に戻済） |
+| 4 | **疎通優先で見送った構造負債（Phase 2 レビュー①〜③）**: タイムラインが `q-virtual-scroll` でなく全DOM常駐／話者割当メニューが行ごと／v-forキーが index | 低〜中 | 長時間会議で数千件→CPU負担・時刻順挿入で再描画破綻 | 性能/構造（将来） | ⏭️本3-Cは「経路が通ること」優先のため**未対応で見送り**。実会議の長時間データを積む段で対応（別DD候補）。末尾追加のみの現状は実害小 |
+| 5 | **`base` は warm で1秒未満完走**: 文字起こしが速すぎてUIの「逐次感」やmid-flightクローズの検証が一瞬で終わる | 低 | base起動→ほぼ即「完了」 | 検証の再現性 | 記録のみ。mid-flightクローズは250ms以内に閉じて meta 前（モデル読込中）を捕捉できた。実会議の長尺音声では逐次感は十分出る見込み（RTFはDD-010で実測済） |

@@ -7,9 +7,11 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
-// SQLite データアクセス層（DD-012-3）。frontend への Tauri command 公開は Phase 2 で行う。
+// SQLite データアクセス層（DD-012-3）。純 rusqlite。
 #[allow(dead_code)]
 mod db;
+// frontend ↔ DB を結ぶ Tauri command 層（DD-012-3 Phase 2）。
+mod db_commands;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -109,6 +111,10 @@ fn start_transcription(
 }
 
 /// 保持中の子プロセスを kill する（ウィンドウ破棄・アプリ終了時）。
+///
+/// Windows では `uv`(子) を kill しても `python`/whisper(孫) が残りうる（DA-新4）。
+/// `child.kill()` は直接の子(uv)しか終了させないため、`taskkill /T /F /PID` で
+/// **プロセスツリーごと**確実に終了させる（孫まで reap）。
 fn kill_sidecar(app: &AppHandle) {
     let state = app.state::<SttState>();
     // lock のガードを take() の行で確実に落とす（MutexGuard を if 本体へ持ち越すと
@@ -116,9 +122,26 @@ fn kill_sidecar(app: &AppHandle) {
     let taken = state.0.lock().unwrap().take();
     if let Some(mut child) = taken {
         let pid = child.id();
-        match child.kill() {
-            Ok(_) => eprintln!("[stt] killed sidecar pid={pid}"),
-            Err(e) => eprintln!("[stt] kill failed pid={pid}: {e}"),
+        #[cfg(windows)]
+        {
+            // プロセスツリー全体を終了（uv とその孫 python/whisper を一掃）。
+            let mut tk = Command::new("taskkill");
+            tk.args(["/T", "/F", "/PID", &pid.to_string()]);
+            tk.creation_flags(CREATE_NO_WINDOW);
+            match tk.status() {
+                Ok(s) => eprintln!("[stt] taskkill tree pid={pid} -> {s}"),
+                Err(e) => {
+                    eprintln!("[stt] taskkill failed pid={pid}: {e}; fallback child.kill()");
+                    let _ = child.kill();
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            match child.kill() {
+                Ok(_) => eprintln!("[stt] killed sidecar pid={pid}"),
+                Err(e) => eprintln!("[stt] kill failed pid={pid}: {e}"),
+            }
         }
     }
 }
@@ -128,7 +151,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(SttState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![greet, start_transcription])
+        .setup(|app| {
+            // DB を開いて DbState を manage（DD-012-3 Phase 2）。失敗時は起動を止める。
+            db_commands::init(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            start_transcription,
+            db_commands::list_meetings,
+            db_commands::create_meeting,
+            db_commands::get_meeting_detail,
+            db_commands::seed_demo,
+        ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {
                 kill_sidecar(window.app_handle());

@@ -1,9 +1,13 @@
 <script setup lang="ts">
-// S-05 リアルタイム議事録（会議中）— Phase 2: 静的骨格（見た目＋ローカル操作のみ）。
+// S-05 リアルタイム議事録（会議中）。
 // 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-05_realtime.html。
 // 「確定テキストが主役（即時・不可変）／LLM整形は薄字の追い上げ」を反映。
-// 中身（Python文字起こし）との接続は Phase 3 で行う。
-import { ref, reactive } from "vue";
+// Phase 3-C: Rust(Tauri)経由でPythonサイドカーの文字起こしを listen し、確定タイムラインへ逐次 push する。
+//   contract: stt-meta / stt-segment / stt-done / stt-error（DD-011/Phase3_実装前詳細化.md §3）
+//   注意: 素のブラウザ(Playwright)には Tauri ランタイムが無く invoke/listen が動かない → ボタンは実ウィンドウ専用。
+import { ref, reactive, onMounted, onUnmounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppNav from "../components/AppNav.vue";
 
 interface AiSeg {
@@ -21,13 +25,34 @@ interface MemoSeg {
 }
 type TimelineItem = AiSeg | MemoSeg;
 
+// サイドカー契約のイベントペイロード（DD-011 §3）
+interface MetaEvent {
+  duration_s: number;
+  model: string;
+  language: string;
+}
+interface SegmentEvent {
+  seq: number;
+  text: string;
+  t_start_ms: number;
+  t_end_ms: number;
+}
+interface DoneEvent {
+  count: number;
+  elapsed_s: number;
+}
+interface ErrorEvent {
+  message: string;
+  where?: string;
+}
+
 const leftDrawer = ref(true);
 
 const drawer = ref(true);
 const showRefined = ref(true);
 const bypass = ref(false);
-const elapsed = ref("00:12:34");
-const latency = ref(2);
+const elapsed = ref("00:00:00");
+const latency = ref(0);
 const drops = ref(0);
 
 const participants = ["鈴木（PM）", "佐藤（エンジニア）", "田中（デザイナー）"];
@@ -36,37 +61,41 @@ const vocab = ["Qwen", "Tauri", "SQLite", "SynchroniNote", "diarization"];
 // 確定話者マッピング（人間確定 > AI推測）
 const mapping = reactive<Record<string, string>>({});
 
-const timeline = reactive<TimelineItem[]>([
-  {
-    type: "ai",
-    speaker: "Speaker_0",
-    t: "00:01",
-    text: "お疲れ様です。今日は基本設計のレビューから始めます。",
-    refined: "お疲れ様です。本日は基本設計のレビューから始めます。",
-    confirmed: false,
-  },
-  {
-    type: "ai",
-    speaker: "Speaker_1",
-    t: "00:03",
-    text: "えっと、確定テキストを主役にする方針で良いですよね。",
-    refined: "確定テキストを主役にする方針で問題ありません。",
-    confirmed: false,
-  },
-  {
-    type: "memo",
-    t: "00:04",
-    text: "★ホワイトボード: 「LLM整形=追い上げレイヤ」の図を記載",
-  },
-  {
-    type: "ai",
-    speaker: "Speaker_0",
-    t: "00:06",
-    text: "はい。話者分離はwhisper非依存で、あー、PoCを別途やります。",
-    refined: null,
-    confirmed: false,
-  },
-]);
+// 文字起こしは実データを Rust 経由で受信して積む（初期は空）。
+const timeline = reactive<TimelineItem[]>([]);
+
+// 文字起こしの状態（UIの合図）。Phase 3-C で追加。
+type SttStatus = "idle" | "preparing" | "running" | "done" | "error";
+const status = ref<SttStatus>("idle");
+const durationS = ref(0);
+const doneCount = ref(0);
+const errorMsg = ref("");
+
+// 素ブラウザ(Playwright)には Tauri ランタイムが無い → ボタンを無効化してフォールバック。
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// ミリ秒 → "mm:ss"
+const fmtMs = (ms: number): string => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+};
+
+const startSample = async (): Promise<void> => {
+  if (!isTauri) return;
+  // 再実行に備えて初期化
+  timeline.length = 0;
+  doneCount.value = 0;
+  errorMsg.value = "";
+  status.value = "preparing"; // meta 受信まで「準備中」スピナー
+  try {
+    await invoke("start_transcription", { audioPath: "audio/sample01.wav", model: "base" });
+  } catch (e) {
+    status.value = "error";
+    errorMsg.value = String(e);
+  }
+};
 
 const displayName = (s: AiSeg): string => mapping[s.speaker] || s.speaker;
 
@@ -84,6 +113,41 @@ const sendMemo = (): void => {
     memo.value = "";
   }
 };
+
+// Tauri イベントの購読/解除（実ウィンドウのみ）。
+const unlisteners: UnlistenFn[] = [];
+onMounted(async () => {
+  if (!isTauri) return;
+  unlisteners.push(
+    await listen<MetaEvent>("stt-meta", (e) => {
+      durationS.value = e.payload.duration_s;
+      status.value = "running"; // 準備完了 → 受信中
+    }),
+    await listen<SegmentEvent>("stt-segment", (e) => {
+      const p = e.payload;
+      timeline.push({
+        type: "ai",
+        speaker: "Speaker_0", // 話者分離は範囲外（暫定固定）
+        t: fmtMs(p.t_start_ms),
+        text: p.text,
+        refined: null, // LLM整形は範囲外
+        confirmed: false, // 話者は人間未確定
+      });
+      elapsed.value = "00:" + fmtMs(p.t_end_ms); // ヘッダの経過＝直近セグメント終端
+    }),
+    await listen<DoneEvent>("stt-done", (e) => {
+      doneCount.value = e.payload.count;
+      status.value = "done";
+    }),
+    await listen<ErrorEvent>("stt-error", (e) => {
+      errorMsg.value = e.payload.message;
+      status.value = "error";
+    }),
+  );
+});
+onUnmounted(() => {
+  unlisteners.forEach((u) => u());
+});
 </script>
 
 <template>
@@ -164,6 +228,36 @@ const sendMemo = (): void => {
           </q-btn>
         </q-banner>
 
+        <!-- 文字起こし開始（実ウィンドウ専用）＋状態表示。Phase 3-C で追加 -->
+        <div class="row items-center q-mb-sm q-gutter-sm">
+          <q-btn
+            unelevated
+            no-caps
+            color="primary"
+            icon="play_arrow"
+            label="サンプルを流す"
+            :disable="!isTauri || status === 'preparing' || status === 'running'"
+            @click="startSample"
+          >
+            <q-tooltip v-if="!isTauri">実ウィンドウ（Tauri）でのみ実行できます</q-tooltip>
+          </q-btn>
+          <q-chip v-if="status === 'preparing'" dense color="amber-3" text-color="grey-9" icon="hourglass_top">
+            文字起こし準備中… <q-spinner-dots color="amber-8" size="1.2em" class="q-ml-xs" />
+          </q-chip>
+          <q-chip v-else-if="status === 'running'" dense color="blue-2" text-color="blue-10" icon="graphic_eq">
+            文字起こし中（音声長 {{ fmtMs(durationS * 1000) }}）
+          </q-chip>
+          <q-chip v-else-if="status === 'done'" dense color="green-3" text-color="green-10" icon="check_circle">
+            完了（{{ doneCount }}件）
+          </q-chip>
+          <q-chip v-else-if="status === 'error'" dense color="red-3" text-color="red-10" icon="error">
+            エラー: {{ errorMsg }}
+          </q-chip>
+          <q-chip v-else dense color="grey-3" text-color="grey-8" icon="info">
+            「サンプルを流す」で文字起こしを開始
+          </q-chip>
+        </div>
+
         <q-card flat bordered>
           <q-card-section>
             <div v-for="(s, i) in timeline" :key="i">
@@ -205,15 +299,11 @@ const sendMemo = (): void => {
                 </div>
               </template>
             </div>
-            <!-- 生成中（タイピング中）チャンク -->
-            <div class="seg">
-              <div class="row items-center">
-                <q-badge color="grey-5" class="q-mr-sm">Speaker_0 <q-icon name="arrow_drop_down" /></q-badge>
-                <span class="text-caption text-grey-6">{{ elapsed }}</span>
-              </div>
-              <div class="q-mt-xs">
-                それでは次のアジェンダ、話者分離の方式について<q-spinner-dots color="primary" size="1.4em" />
-              </div>
+            <!-- 受信待ち（タイムラインが空のとき） -->
+            <div v-if="timeline.length === 0" class="text-grey-6 q-pa-md text-center">
+              <q-icon name="graphic_eq" size="28px" class="q-mb-xs" />
+              <div v-if="status === 'preparing'">モデル読込中… 最初の文字起こしまで少しかかります</div>
+              <div v-else>まだ文字起こしはありません。「サンプルを流す」で開始してください。</div>
             </div>
           </q-card-section>
         </q-card>
