@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-07 議事録プレビュー（生成直後）</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  .md h2{font-size:1.1rem;margin:1.1em 0 .4em;border-left:4px solid var(--q-primary);padding-left:.5em;}
+  .md ul{margin:.2em 0 .8em 1.2em;} .md li{margin:.25em 0;}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-icon name="fact_check" size="24px" class="q-mr-sm"></q-icon>
+        <q-toolbar-title>議事録プレビュー（生成完了）</q-toolbar-title>
+        <q-toggle v-model="editMode" color="white" keep-color label="編集" left-label class="q-mr-md"></q-toggle>
+        <q-btn flat dense no-caps icon="content_copy" label="コピー"></q-btn>
+        <q-btn unelevated no-caps color="green-6" icon="save" label="保存（completed）" href="S-01_calendar.html" class="q-ml-sm"></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:960px;margin:0 auto">
+        <q-banner dense rounded class="bg-green-1 q-mb-md text-grey-9">
+          <template v-slot:avatar><q-icon name="check_circle" color="green-6"></q-icon></template>
+          清書が完了しました（gemma4:26b・所要 4分12秒）。内容を確認し、必要なら微修正して保存してください。保存で <code>final_minutes</code> 更新・<code>status='completed'</code>。
+        </q-banner>
+
+        <q-card flat bordered>
+          <q-card-section class="row items-center">
+            <div class="text-h6">設計レビュー</div>
+            <q-space></q-space>
+            <q-badge outline color="grey-7" label="2026/06/18 13:00–14:05"></q-badge>
+          </q-card-section>
+          <q-separator></q-separator>
+
+          <!-- 編集モード: Markdownソース / 表示モード: レンダリング -->
+          <q-card-section v-if="editMode">
+            <q-input type="textarea" outlined v-model="src" autogrow input-style="min-height:340px;font-family:ui-monospace,monospace"></q-input>
+          </q-card-section>
+          <q-card-section v-else class="md">
+            <h2>■ 会議概要</h2>
+            <ul><li>基本設計レビューを実施。確定テキスト即表示を主役とする方針を確認。リアルタイム整形は追い上げレイヤに格下げ。</li></ul>
+            <h2>■ 決定事項（誰が・何を・いつまでに）</h2>
+            <ul>
+              <li>佐藤：話者分離PoC（pyannote / sherpa-onnx, CPU）を 6/20 までに実施。</li>
+              <li>鈴木：清書モデルを gemma4:26b に確定。UIの所要時間表示を実測 3〜6分へ修正。</li>
+            </ul>
+            <h2>■ 保留事項・次回の課題</h2>
+            <ul><li>32B密モデルの要否、iGPU(780M)部分オフロードは余力で検証。</li></ul>
+            <h2>■ アクションアイテム（担当付き）</h2>
+            <ul><li>[ ] DD-004 起票（佐藤・6/9）</li><li>[ ] 要件File 5 の文言修正（鈴木・6/9）</li></ul>
+            <h2>■ 各アジェンダの議論詳細</h2>
+            <ul>
+              <li><b>基本設計</b>：CPUのtok/s実測から、会議中にLLMで全文整形すると破綻。確定テキストを主役に。</li>
+              <li><b>話者分離</b>：whisper非依存スタックで終了後一括ラベリング＋人間名寄せ。</li>
+              <li><b>人間メモ</b>：★社長指示「予算上限150万」は清書でも最優先・全文保持。</li>
+            </ul>
+          </q-card-section>
+        </q-card>
+
+        <div class="row q-gutter-sm justify-end q-mt-md q-mb-xl">
+          <q-btn flat no-caps label="カレンダーへ戻る" icon="arrow_back" href="S-01_calendar.html"></q-btn>
+          <q-btn outline no-caps color="primary" icon="download" label="エクスポート"></q-btn>
+          <q-btn unelevated no-caps color="green-6" icon="save" label="保存して完了" href="S-01_calendar.html"></q-btn>
+        </div>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='S-07'
+    const editMode=ref(false)
+    const src=ref('## ■ 会議概要\n基本設計レビューを実施。確定テキスト即表示を主役とする方針を確認。\n\n## ■ 決定事項\n- 佐藤：話者分離PoCを6/20までに\n- 鈴木：清書モデルを gemma4:26b に確定\n\n## ■ アクションアイテム\n- [ ] DD-004 起票（佐藤）')
+    return { editMode, src, leftDrawer, nav, active }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

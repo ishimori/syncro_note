@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-01 ホーム／カレンダー</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  .cal-cell{min-height:104px;border:1px solid #e5e7eb;}
+  .cal-cell.dim{background:#fafafa;color:#bbb;}
+  .cal-cell.today{outline:2px solid var(--q-primary);outline-offset:-2px;}
+  .cal-head{font-size:12px;color:#6b7280;}
+  .meet-chip{font-size:11px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="graphic_eq"></q-btn>
+        <q-toolbar-title>SynchroniNote</q-toolbar-title>
+        <q-btn flat dense no-caps icon="add" label="新規会議" href="S-02_create-meeting.html" class="q-mr-sm"></q-btn>
+        <q-btn flat round dense icon="settings" href="S-08_settings.html"><q-tooltip>設定</q-tooltip></q-btn>
+        <q-btn flat round dense icon="apps" href="index.html"><q-tooltip>モック一覧</q-tooltip></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:1100px;margin:0 auto">
+        <!-- 月ナビ -->
+        <div class="row items-center q-mb-md">
+          <div class="text-h5 q-mr-md">2026年 6月</div>
+          <q-btn flat round dense icon="chevron_left"></q-btn>
+          <q-btn flat round dense icon="chevron_right"></q-btn>
+          <q-btn outline no-caps dense label="今日" class="q-ml-sm"></q-btn>
+          <q-space></q-space>
+          <q-btn-toggle v-model="view" no-caps unelevated toggle-color="primary" :options="[{label:'月',value:'month'},{label:'週',value:'week'}]"></q-btn-toggle>
+        </div>
+
+        <!-- 凡例 -->
+        <div class="row q-gutter-sm q-mb-sm items-center text-caption text-grey-7">
+          <q-badge color="blue-5" label="予約 scheduled"></q-badge>
+          <q-badge color="red-5" label="進行中 active"></q-badge>
+          <q-badge color="green-6" label="完了 completed"></q-badge>
+          <span class="q-ml-md">過去/完了をクリック→議事録詳細、当日/未来→会議作成、進行中→会議画面</span>
+        </div>
+
+        <!-- カレンダー -->
+        <q-card flat bordered>
+          <div class="row text-center q-py-xs">
+            <div class="col cal-head" v-for="w in weekdays" :key="w">{{ w }}</div>
+          </div>
+          <div class="row" v-for="(week,wi) in weeks" :key="wi">
+            <div class="col cal-cell q-pa-xs" v-for="(d,di) in week" :key="di"
+                 :class="{dim:!d.inMonth, today:d.today}">
+              <div class="row items-center">
+                <div class="text-weight-medium">{{ d.day }}</div>
+                <q-badge v-if="d.today" color="primary" class="q-ml-xs">今日</q-badge>
+              </div>
+              <q-chip v-for="(m,mi) in d.meetings" :key="mi" dense class="meet-chip q-ma-none q-mt-xs full-width justify-start"
+                      :color="statusColor(m.status)" text-color="white" :href="linkFor(m)">
+                <q-icon :name="statusIcon(m.status)" size="14px" class="q-mr-xs"></q-icon>
+                {{ m.time }} {{ m.title }}
+              </q-chip>
+            </div>
+          </div>
+        </q-card>
+
+        <q-banner dense rounded class="bg-grey-2 q-mt-md text-grey-8">
+          <template v-slot:avatar><q-icon name="info" color="primary"></q-icon></template>
+          これは静的モックです。日付セルやチップのクリックで各画面へ遷移します（ダミーデータ）。
+        </q-banner>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref, computed } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='S-01'
+    const view = ref('month')
+    const weekdays = ['日','月','火','水','木','金','土']
+    // 2026年6月。ダミー会議を数日に配置。
+    const meetings = {
+      3:[{title:'要件レビュー', time:'10:00', status:'completed'}],
+      9:[{title:'技術選定MTG', time:'14:00', status:'completed'}],
+      12:[{title:'スプリント計画', time:'09:30', status:'completed'},{title:'1on1', time:'17:00', status:'completed'}],
+      7:[{title:'定例会', time:'15:00', status:'active'}],            // 今日(=7日)・進行中
+      18:[{title:'設計レビュー', time:'13:00', status:'scheduled'}],
+      24:[{title:'四半期報告', time:'11:00', status:'scheduled'}],
+    }
+    const todayDay = 7
+    const year=2026, month=5 // 0-indexed June
+    const first = new Date(year, month, 1)
+    const startOffset = first.getDay()
+    const daysInMonth = new Date(year, month+1, 0).getDate()
+    const prevDays = new Date(year, month, 0).getDate()
+    const cells = []
+    for(let i=0;i<startOffset;i++) cells.push({day:prevDays-startOffset+1+i, inMonth:false, meetings:[]})
+    for(let d=1; d<=daysInMonth; d++) cells.push({day:d, inMonth:true, today:d===todayDay, meetings:meetings[d]||[]})
+    while(cells.length%7!==0) cells.push({day:cells.length-(startOffset+daysInMonth)+1, inMonth:false, meetings:[]})
+    const weeks = []
+    for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7))
+
+    const statusColor = s => ({scheduled:'blue-5',active:'red-5',completed:'green-6'}[s]||'grey')
+    const statusIcon  = s => ({scheduled:'event',active:'fiber_manual_record',completed:'check'}[s]||'event')
+    const linkFor = m => m.status==='completed' ? 'S-03_minutes-detail.html'
+                       : m.status==='active'    ? 'S-05_realtime.html'
+                       : 'S-02_create-meeting.html'
+    return { view, weekdays, weeks, statusColor, statusIcon, linkFor, leftDrawer, nav, active }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

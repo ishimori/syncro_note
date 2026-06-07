@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — 画面モック ハブ</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>:root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-avatar icon="graphic_eq" color="secondary" text-color="white"></q-avatar>
+        <q-toolbar-title>SynchroniNote — 画面モック</q-toolbar-title>
+        <q-badge color="amber-8" class="q-pa-sm">紙芝居（静的HTML / Quasar UMD）</q-badge>
+      </q-toolbar>
+    </q-header>
+    <q-page-container>
+      <q-page class="q-pa-lg" style="max-width:1100px;margin:0 auto">
+        <div class="text-h5 q-mb-xs">SynchroniNote 画面モック一覧</div>
+        <div class="text-grey-7 q-mb-lg">見た目とレイアウトの合意用。各カードから画面を開けます。設計の正は基本設計書（SSOT）。</div>
+
+        <div class="row q-col-gutter-md">
+          <div class="col-12 col-sm-6 col-md-4" v-for="s in screens" :key="s.id">
+            <q-card flat bordered class="full-height" :class="s.core ? 'bg-amber-1' : ''">
+              <q-card-section>
+                <div class="row items-center no-wrap">
+                  <q-icon :name="s.icon" size="28px" color="primary" class="q-mr-sm"></q-icon>
+                  <div>
+                    <div class="text-caption text-grey-7">{{ s.id }}</div>
+                    <div class="text-subtitle1 text-weight-medium">{{ s.name }}<q-badge v-if="s.core" color="amber-8" class="q-ml-sm">中核</q-badge></div>
+                  </div>
+                </div>
+                <div class="text-body2 text-grey-8 q-mt-sm">{{ s.desc }}</div>
+              </q-card-section>
+              <q-card-actions align="right">
+                <q-btn flat color="primary" :href="s.href" label="開く" icon-right="open_in_new"></q-btn>
+              </q-card-actions>
+            </q-card>
+          </div>
+        </div>
+
+        <q-banner class="bg-grey-2 q-mt-lg" rounded>
+          <template v-slot:avatar><q-icon name="route" color="primary"></q-icon></template>
+          画面遷移図・機能概要の詳細は <a href="../画面一覧.md">../画面一覧.md</a> を参照。
+        </q-banner>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='一覧'
+    const screens = [
+      { id:'S-01', name:'ホーム／カレンダー', icon:'calendar_month', href:'S-01_calendar.html', desc:'すべての起点。会議の予約・過去議事録の閲覧・会議開始。' },
+      { id:'S-02', name:'会議作成・事前登録', icon:'event_note', href:'S-02_create-meeting.html', desc:'参加者・アジェンダ・専門用語・参考資料を入力。' },
+      { id:'S-03', name:'議事録詳細（過去会議）', icon:'description', href:'S-03_minutes-detail.html', desc:'完成議事録と元タイムラインを閲覧・エクスポート。' },
+      { id:'S-04', name:'会議開始プリフライト', icon:'mic', href:'S-04_preflight.html', desc:'マイク確認・モデルロード確認をして録音開始。' },
+      { id:'S-05', name:'リアルタイム議事録', icon:'graphic_eq', href:'S-05_realtime.html', desc:'確定文字起こし＋話者修正＋人間メモ（会議中）。', core:true },
+      { id:'S-06', name:'議事録生成中（バッチ）', icon:'auto_awesome', href:'S-06_generating.html', desc:'モデル切替→特大モデルで清書（ストリーミング進捗）。' },
+      { id:'S-07', name:'議事録プレビュー', icon:'fact_check', href:'S-07_minutes-preview.html', desc:'生成結果を確認・微修正・保存。' },
+      { id:'S-08', name:'設定', icon:'settings', href:'S-08_settings.html', desc:'マイク・モデル・スレッド数・保存先。' },
+    ]
+    return { screens, leftDrawer, nav, active }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

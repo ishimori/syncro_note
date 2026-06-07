@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-04 会議開始プリフライト</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  .meter{height:14px;border-radius:7px;background:#e5e7eb;overflow:hidden;}
+  .meter > div{height:100%;background:linear-gradient(90deg,#22c55e,#eab308,#ef4444);}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="arrow_back" href="S-01_calendar.html"></q-btn>
+        <q-toolbar-title>会議開始の準備（プリフライト）</q-toolbar-title>
+        <q-badge color="red-5" label="● 録音前"></q-badge>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:720px;margin:0 auto">
+        <q-banner dense rounded class="bg-grey-2 q-mb-md text-grey-8">
+          <template v-slot:avatar><q-icon name="checklist" color="primary"></q-icon></template>
+          無音録音・モデル未ロードの事故を防ぐため、開始前に確認します。
+        </q-banner>
+
+        <!-- 会議サマリ -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section>
+            <div class="text-subtitle1 text-weight-medium">設計レビュー</div>
+            <div class="text-grey-7">参加者: 鈴木（PM）・佐藤（エンジニア）／用語: Qwen, Tauri, SQLite</div>
+          </q-card-section>
+        </q-card>
+
+        <!-- マイク -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="mic" class="q-mr-xs"/>マイク</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="q-gutter-md">
+            <q-select outlined v-model="mic" :options="mics" label="入力デバイス" dense></q-select>
+            <div>
+              <div class="text-caption text-grey-7 q-mb-xs">入力レベル（話してみてバーが動けばOK）</div>
+              <div class="meter"><div :style="{width: level+'%'}"></div></div>
+            </div>
+            <q-item dense class="q-pa-none">
+              <q-item-section avatar><q-icon name="check_circle" color="green-6"></q-icon></q-item-section>
+              <q-item-section>16kHz / モノラル / f32 で取得可能</q-item-section>
+            </q-item>
+          </q-card-section>
+        </q-card>
+
+        <!-- モデル -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="memory" class="q-mr-xs"/>モデルのロード状態</div></q-card-section>
+          <q-separator></q-separator>
+          <q-list separator>
+            <q-item>
+              <q-item-section avatar><q-icon name="record_voice_over" color="primary"></q-icon></q-item-section>
+              <q-item-section><q-item-label>文字起こし（STT）</q-item-label><q-item-label caption>whisper base（CPU, n_threads=4）</q-item-label></q-item-section>
+              <q-item-section side><q-badge color="green-6" label="ロード済"></q-badge></q-item-section>
+            </q-item>
+            <q-item>
+              <q-item-section avatar><q-icon name="auto_fix_high" color="primary"></q-icon></q-item-section>
+              <q-item-section><q-item-label>リアルタイム整形（任意）</q-item-label><q-item-label caption>qwen3:8b（追い上げレイヤ）</q-item-label></q-item-section>
+              <q-item-section side><q-toggle v-model="useLlm" color="primary"></q-toggle></q-item-section>
+            </q-item>
+          </q-list>
+        </q-card>
+
+        <div class="row q-gutter-sm justify-end">
+          <q-btn flat no-caps label="戻る" href="S-01_calendar.html"></q-btn>
+          <q-btn unelevated no-caps color="red-6" icon="fiber_manual_record" label="録音開始" href="S-05_realtime.html"></q-btn>
+        </div>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref, onMounted } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='S-04'
+    const mics=['既定 - マイク配列 (Realtek)','USB会議マイク','ヘッドセット']
+    const mic=ref(mics[0]); const useLlm=ref(true); const level=ref(20)
+    onMounted(()=>{ setInterval(()=>{ level.value = 15 + Math.round(Math.random()*70) }, 400) })
+    return { mics, mic, useLlm, level, leftDrawer, nav, active }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

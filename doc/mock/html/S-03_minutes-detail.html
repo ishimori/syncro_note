@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-03 議事録詳細（過去会議）</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  .md h2{font-size:1.1rem;margin:1.1em 0 .4em;border-left:4px solid var(--q-primary);padding-left:.5em;}
+  .md ul{margin:.2em 0 .8em 1.2em;} .md li{margin:.2em 0;}
+  .memo{background:#fff7ed;}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="arrow_back" href="S-01_calendar.html"></q-btn>
+        <q-toolbar-title>議事録詳細</q-toolbar-title>
+        <q-badge color="green-6" label="completed" class="q-mr-sm"></q-badge>
+        <q-btn flat dense no-caps icon="content_copy" label="Markdownコピー"></q-btn>
+        <q-btn flat dense no-caps icon="download" label="エクスポート"></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:960px;margin:0 auto">
+        <!-- メタ -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section>
+            <div class="text-h6">要件レビュー</div>
+            <div class="text-grey-7 q-mt-xs">2026/06/03(水) 10:00–11:05 ・ 会議室A ・ 所要 1時間5分</div>
+            <div class="q-mt-sm row q-gutter-xs">
+              <q-chip dense icon="person" label="鈴木（PM）"></q-chip>
+              <q-chip dense icon="person" label="佐藤（エンジニア）"></q-chip>
+              <q-chip dense icon="attach_file" label="FY26_予算案.xlsx"></q-chip>
+            </div>
+          </q-card-section>
+        </q-card>
+
+        <!-- 最終議事録 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section class="row items-center">
+            <div class="text-subtitle1 text-weight-medium"><q-icon name="description" class="q-mr-xs"/>最終議事録</div>
+            <q-space></q-space>
+            <q-badge outline color="grey-7" label="batch: gemma4:26b"></q-badge>
+          </q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="md">
+            <h2>■ 会議概要</h2>
+            <ul><li>基本設計書(SSOT)のレビューを実施。リアルタイム整形を真実源にしない方針を確認。</li></ul>
+            <h2>■ 決定事項（誰が・何を・いつまでに）</h2>
+            <ul>
+              <li>佐藤：話者分離は whisper 非依存（pyannote/sherpa-onnx）で PoC を 6/20 までに。</li>
+              <li>鈴木：清書モデルを gemma4:26b に確定。所要時間表示は実測 3〜6分に修正。</li>
+            </ul>
+            <h2>■ 保留事項・次回の課題</h2>
+            <ul><li>32B密モデルの要否、iGPU部分オフロードは余力検証。</li></ul>
+            <h2>■ アクションアイテム（担当付き）</h2>
+            <ul><li>[ ] DD-004 起票（佐藤）</li><li>[ ] UI文言の修正（鈴木）</li></ul>
+            <h2>■ 各アジェンダの議論詳細</h2>
+            <ul><li>確定テキスト即表示を主役とする設計で、CPUでも実用的なリアルタイム性が成立する見込み。</li></ul>
+          </q-card-section>
+        </q-card>
+
+        <!-- 元タイムライン（折りたたみ） -->
+        <q-card flat bordered>
+          <q-expansion-item icon="forum" label="元タイムライン（証跡）" caption="確定文字起こし＋人間メモ">
+            <q-separator></q-separator>
+            <q-card-section>
+              <q-chat-message name="鈴木（PM）" :text="['来期の予算は基本ラインとして100万円で考えています。']" stamp="10:05" bg-color="grey-2"></q-chat-message>
+              <q-chat-message name="📝人間メモ" :text="['★社長から「最大150万まで決済を出す」と口頭指示あり']" stamp="10:05" sent bg-color="orange-2"></q-chat-message>
+              <q-chat-message name="佐藤（エンジニア）" :text="['了解しました。では150万を上限にプロトタイプを進めます。']" stamp="10:06" bg-color="grey-2"></q-chat-message>
+            </q-card-section>
+          </q-expansion-item>
+        </q-card>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({ setup(){ return { leftDrawer:ref(true), nav:NAV, active:'S-03' } } }).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

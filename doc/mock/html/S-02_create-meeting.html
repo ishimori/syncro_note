@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-02 会議作成・事前登録</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>:root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;} .dropzone{border:2px dashed #cbd5e1;border-radius:8px;}</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="arrow_back" href="S-01_calendar.html"></q-btn>
+        <q-toolbar-title>会議の作成・事前登録</q-toolbar-title>
+        <q-badge color="blue-5" label="2026/06/18(木) 予約"></q-badge>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:820px;margin:0 auto">
+        <q-banner dense rounded class="bg-grey-2 q-mb-md text-grey-8">
+          <template v-slot:avatar><q-icon name="lightbulb" color="amber-8"></q-icon></template>
+          ここで入力した前提（参加者・アジェンダ・用語・資料）が、リアルタイム補正と終了後の清書プロンプトに渡ります。
+        </q-banner>
+
+        <!-- 基本情報 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="info" class="q-mr-xs"/>基本情報</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="q-gutter-md">
+            <q-input outlined v-model="title" label="会議名 *" :rules="[v=>!!v||'必須']"></q-input>
+            <div class="row q-col-gutter-md">
+              <q-input class="col-12 col-sm-6" outlined v-model="date" label="日付" mask="####/##/##">
+                <template v-slot:append><q-icon name="event"/></template>
+              </q-input>
+              <q-input class="col-6 col-sm-3" outlined v-model="start" label="開始" mask="##:##"></q-input>
+              <q-input class="col-6 col-sm-3" outlined v-model="end" label="終了" mask="##:##"></q-input>
+            </div>
+            <q-input outlined v-model="place" label="場所 / URL" placeholder="会議室A / https://...">
+              <template v-slot:prepend><q-icon name="place"/></template>
+            </q-input>
+          </q-card-section>
+        </q-card>
+
+        <!-- アジェンダ -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="list_alt" class="q-mr-xs"/>アジェンダ（Markdown可）</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section>
+            <q-input outlined type="textarea" v-model="agenda" autogrow input-style="min-height:90px"></q-input>
+          </q-card-section>
+        </q-card>
+
+        <!-- 参加者 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="group" class="q-mr-xs"/>参加者リスト</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section>
+            <q-list bordered separator class="rounded-borders q-mb-sm">
+              <q-item v-for="(p,i) in participants" :key="i">
+                <q-item-section avatar><q-avatar color="secondary" text-color="white">{{ p.name.charAt(0) }}</q-avatar></q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ p.name }} <q-badge v-if="p.role" outline color="grey-7" :label="p.role" class="q-ml-xs"/></q-item-label>
+                  <q-item-label caption>声の補足: {{ p.voice || '—' }}</q-item-label>
+                </q-item-section>
+                <q-item-section side><q-btn flat round dense icon="close" color="grey-6"></q-btn></q-item-section>
+              </q-item>
+            </q-list>
+            <div class="row q-col-gutter-sm items-center">
+              <q-input class="col" dense outlined v-model="np.name" label="氏名 *"></q-input>
+              <q-input class="col" dense outlined v-model="np.role" label="役職"></q-input>
+              <q-input class="col" dense outlined v-model="np.voice" label="声の補足（例:男性/低音）"></q-input>
+              <q-btn round color="primary" icon="add" @click="addParticipant"></q-btn>
+            </div>
+          </q-card-section>
+        </q-card>
+
+        <!-- 専門用語 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="sell" class="q-mr-xs"/>専門用語辞書</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section>
+            <q-select outlined v-model="vocab" use-input use-chips multiple hide-dropdown-icon new-value-mode="add-unique"
+                      label="用語を入力してEnter（製品名・人名の特殊漢字など）"></q-select>
+          </q-card-section>
+        </q-card>
+
+        <!-- 資料 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="attach_file" class="q-mr-xs"/>参考資料（.xlsx / .pdf）</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section>
+            <div class="dropzone q-pa-lg text-center text-grey-6 q-mb-sm">
+              <q-icon name="cloud_upload" size="36px"></q-icon>
+              <div>ここにファイルをドラッグ＆ドロップ</div>
+            </div>
+            <q-list bordered separator class="rounded-borders">
+              <q-item>
+                <q-item-section avatar><q-icon name="grid_on" color="green-7"></q-icon></q-item-section>
+                <q-item-section><q-item-label>FY26_予算案.xlsx</q-item-label><q-item-label caption>解析完了（extracted_text にキャッシュ）</q-item-label></q-item-section>
+                <q-item-section side><q-badge color="green-6" label="完了"></q-badge></q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section avatar><q-icon name="picture_as_pdf" color="red-7"></q-icon></q-item-section>
+                <q-item-section><q-item-label>製品仕様_v3.pdf</q-item-label><q-item-label caption>テキスト抽出中…</q-item-label></q-item-section>
+                <q-item-section side><q-spinner color="primary" size="18px"></q-spinner></q-item-section>
+              </q-item>
+            </q-list>
+          </q-card-section>
+        </q-card>
+
+        <div class="row q-gutter-sm justify-end q-mb-xl">
+          <q-btn flat no-caps label="キャンセル" href="S-01_calendar.html"></q-btn>
+          <q-btn outline no-caps color="primary" icon="save" label="保存して予約" href="S-01_calendar.html"></q-btn>
+          <q-btn unelevated no-caps color="primary" icon="play_arrow" label="この内容で会議を開始" href="S-04_preflight.html"></q-btn>
+        </div>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='S-02'
+    const title=ref('設計レビュー'); const date=ref('2026/06/18'); const start=ref('13:00'); const end=ref('14:00')
+    const place=ref('会議室A'); const agenda=ref('- 基本設計書のレビュー\n- 話者分離方式の確定\n- 次スプリントのDD候補')
+    const participants=ref([
+      {name:'鈴木', role:'PM', voice:'男性・低音'},
+      {name:'佐藤', role:'エンジニア', voice:'女性'},
+    ])
+    const np=ref({name:'',role:'',voice:''})
+    const addParticipant=()=>{ if(np.value.name){ participants.value.push({...np.value}); np.value={name:'',role:'',voice:''} } }
+    const vocab=ref(['Qwen','Tauri','SQLite','SynchroniNote'])
+    return { title,date,start,end,place,agenda,participants,np,addParticipant,vocab, leftDrawer, nav, active }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>

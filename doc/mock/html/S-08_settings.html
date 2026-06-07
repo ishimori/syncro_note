@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-08 設定</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>:root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.href" clickable :href="n.href" :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="arrow_back" href="S-01_calendar.html"></q-btn>
+        <q-toolbar-title>設定</q-toolbar-title>
+        <q-btn unelevated no-caps color="green-6" icon="save" label="保存"></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:760px;margin:0 auto">
+        <q-banner dense rounded class="bg-grey-2 q-mb-md text-grey-8">
+          <template v-slot:avatar><q-icon name="tune" color="primary"></q-icon></template>
+          ローカル実行のチューニング。コア配分は「合計が物理8コアを超えない」ことが目安（超過でスラッシング）。
+        </q-banner>
+
+        <!-- マイク -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="mic" class="q-mr-xs"/>マイク</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section><q-select outlined dense v-model="mic" :options="mics" label="既定の入力デバイス"></q-select></q-card-section>
+        </q-card>
+
+        <!-- モデル -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="memory" class="q-mr-xs"/>モデル</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="q-gutter-md">
+            <q-select outlined dense v-model="stt" :options="stts" label="STT（文字起こし）"></q-select>
+            <q-select outlined dense v-model="live" :options="lives" label="リアルタイム整形（live）"></q-select>
+            <q-select outlined dense v-model="batch" :options="batches" label="終了後清書（batch）"></q-select>
+            <q-toggle v-model="useLlmLive" label="会議中のLLM整形を有効化（任意の追い上げレイヤ）" color="primary"></q-toggle>
+            <q-select outlined dense v-model="kv" :options="['f16','q8_0']" label="KVキャッシュ型（q8_0でメモリ半減）"></q-select>
+          </q-card-section>
+        </q-card>
+
+        <!-- コア配分 -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="developer_board" class="q-mr-xs"/>スレッド / コア配分（8C/16T）</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="q-gutter-lg">
+            <div>
+              <div class="text-caption text-grey-7">whisper n_threads：{{ nThreads }}</div>
+              <q-slider v-model="nThreads" :min="1" :max="8" markers label color="primary"></q-slider>
+            </div>
+            <div>
+              <div class="text-caption text-grey-7">Ollama num_thread：{{ numThread }}</div>
+              <q-slider v-model="numThread" :min="1" :max="8" markers label color="primary"></q-slider>
+            </div>
+            <q-banner dense class="bg-amber-1 text-grey-9" rounded>
+              <q-icon name="warning" color="amber-8"/> 既定は STT↔LLM の時間分離（同時実行はメモリ帯域競合で16〜51%劣化しうる）。
+            </q-banner>
+          </q-card-section>
+        </q-card>
+
+        <!-- データ -->
+        <q-card flat bordered>
+          <q-card-section><div class="text-subtitle1 text-weight-medium"><q-icon name="folder" class="q-mr-xs"/>データ</div></q-card-section>
+          <q-separator></q-separator>
+          <q-card-section class="q-gutter-md">
+            <q-input outlined dense v-model="dbPath" label="SQLite 保存先" readonly>
+              <template v-slot:append><q-btn flat dense icon="folder_open"></q-btn></template>
+            </q-input>
+            <q-toggle v-model="keepAudio" label="音声を保存する（終了後の話者分離・再解析用）" color="primary"></q-toggle>
+          </q-card-section>
+        </q-card>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref } = Vue
+const NAV=[{id:'一覧',name:'モックハブ',icon:'apps',href:'index.html'},{id:'S-01',name:'カレンダー',icon:'calendar_month',href:'S-01_calendar.html'},{id:'S-02',name:'会議作成',icon:'event_note',href:'S-02_create-meeting.html'},{id:'S-03',name:'議事録詳細',icon:'description',href:'S-03_minutes-detail.html'},{id:'S-04',name:'プリフライト',icon:'mic',href:'S-04_preflight.html'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq',href:'S-05_realtime.html'},{id:'S-06',name:'生成中',icon:'auto_awesome',href:'S-06_generating.html'},{id:'S-07',name:'プレビュー',icon:'fact_check',href:'S-07_minutes-preview.html'},{id:'S-08',name:'設定',icon:'settings',href:'S-08_settings.html'}]
+createApp({
+  setup(){
+    return {
+      leftDrawer: ref(true), nav: NAV, active: 'S-08',
+      mic: ref('既定 - マイク配列 (Realtek)'), mics:['既定 - マイク配列 (Realtek)','USB会議マイク','ヘッドセット'],
+      stt: ref('whisper base'), stts:['whisper tiny','whisper base','whisper small'],
+      live: ref('qwen3:8b'), lives:['（無効）','qwen3:8b','gemma4:e4b'],
+      batch: ref('gemma4:26b'), batches:['gemma4:26b','Qwen3-30B-A3B'],
+      useLlmLive: ref(true), kv: ref('q8_0'),
+      nThreads: ref(4), numThread: ref(4),
+      dbPath: ref('%APPDATA%/SynchroniNote/data.sqlite'), keepAudio: ref(true),
+    }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>
