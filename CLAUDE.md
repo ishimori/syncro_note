@@ -37,6 +37,10 @@
 - **テンプレート**: `doc/templates/dd_template.md`
 - **インデックス**: `doc/DD/DD-INDEX.md`
 
+## スクリプト（補助ツール）
+
+`scripts/` 配下の補助スクリプト（アプリ起動/停止/ビルド・Python UI 起動・実ウィンドウ操作・索引生成）の **一覧と使い方は `scripts/README.md`** を参照（やりたいこと→実行コマンドの早見表つき）。スクリプトを追加・変更したら同 README も更新する。
+
 ## 利用可能なスキル
 
 > スキルは `.claude/skills/` に配置されています（skills形式）
