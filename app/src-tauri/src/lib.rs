@@ -2,7 +2,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -26,6 +26,10 @@ struct SttSession {
 }
 struct SttState(Mutex<Option<SttSession>>);
 
+/// 配布時に同梱した sidecar 実行ファイルの絶対パス（無ければ `None`＝開発時で uv 経路）。
+/// setup で一度だけ解決する（DD-012-6: 開発=uv / 配布=同梱exe の起動切替の唯一の分岐点）。
+static SIDECAR_EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -44,6 +48,68 @@ fn repo_python_dir() -> Result<PathBuf, String> {
         .map_err(|e| format!("python ディレクトリが見つかりません({}): {e}", dir.display()))
 }
 
+/// サイドカー起動の基底コマンドを生成する（DD-012-6: 配布パッケージングの唯一の分岐点）。
+///
+/// - 配布時: 同梱した単一exe（`SIDECAR_EXE`）を `exe <module> <module固有引数...>` で起動する。
+///   exe 側は第1引数 `module` で sidecar / summarize_sidecar / calendar_parse_sidecar を振り分ける
+///   （`pipeline.dist_entry`）。
+/// - 開発時: `uv run python -m synchroni_note.pipeline.<module> <module固有引数...>`（従来どおり）。
+///
+/// どちらの経路でもフロントとの契約（stdin/stdout の JSON Lines）は不変（DD-011 DA#1）。
+/// `PYTHONUTF8` とコンソール窓抑止（Windows）はここで一括設定する。呼び出し側は戻り値へ
+/// module 固有の引数と stdio を足して spawn する。
+fn sidecar_base(module: &str) -> Result<Command, String> {
+    let mut cmd = match SIDECAR_EXE.get().and_then(|o| o.as_ref()) {
+        // 配布: 同梱 exe。第1引数 module で dist_entry が対象 sidecar へ振り分ける。
+        Some(exe) => {
+            let mut c = Command::new(exe);
+            c.arg(module);
+            c
+        }
+        // 開発（未解決を含む）: uv 経由でモジュール実行。uv が PATH に要る。
+        None => {
+            let py_dir = repo_python_dir()?;
+            let mut c = Command::new("uv");
+            c.current_dir(&py_dir)
+                .args(["run", "python", "-m"])
+                .arg(format!("synchroni_note.pipeline.{module}"));
+            c
+        }
+    };
+    cmd.env("PYTHONUTF8", "1"); // 文字化け保険（DA#2）
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    Ok(cmd)
+}
+
+/// 配布物に同梱した sidecar exe を探す（DD-012-6）。見つからなければ `None`＝開発(uv)経路。
+///
+/// 探索順:
+/// 1. 環境変数 `SYNCHRONI_SIDECAR_EXE`（手動上書き。exe ビルド前でも切替経路を検証できる）。
+/// 2. Tauri の resource_dir 配下（配布物に同梱した実体）。
+///
+/// resource 配下の配置名（`sidecar/synchroni-sidecar.exe`）は仮。PyInstaller の実ビルド時に
+/// `tauri.conf.json` の `bundle.resources` と突き合わせて確定する（DD-012-6 Phase1）。
+fn resolve_sidecar_exe(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SYNCHRONI_SIDECAR_EXE") {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            eprintln!("[sidecar] exe(env)= {}", path.display());
+            return Some(path);
+        }
+    }
+    let cand = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("sidecar")
+        .join("synchroni-sidecar.exe");
+    cand.is_file().then(|| {
+        eprintln!("[sidecar] exe(resource)= {}", cand.display());
+        cand.clone()
+    })
+}
+
 /// 添付の本文抽出結果（sidecar `--extract` の done/error を畳んだ形・DD-012-10）。
 pub(crate) struct ExtractOutcome {
     pub status: String,       // "done" | "error"
@@ -59,24 +125,12 @@ pub(crate) fn extract_text_blocking(
     path: &str,
     file_type: Option<&str>,
 ) -> Result<ExtractOutcome, String> {
-    let py_dir = repo_python_dir()?;
-    let mut cmd = Command::new("uv");
-    cmd.current_dir(&py_dir)
-        .env("PYTHONUTF8", "1") // 文字化け保険
-        .args([
-            "run",
-            "python",
-            "-m",
-            "synchroni_note.pipeline.sidecar",
-            "--extract",
-            path,
-        ]);
+    let mut cmd = sidecar_base("sidecar")?;
+    cmd.args(["--extract", path]);
     if let Some(t) = file_type {
         cmd.args(["--type", t]);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let output = cmd
         .output()
@@ -114,20 +168,11 @@ fn parse_calendar_text(text: String) -> Result<Value, String> {
     if text.trim().is_empty() {
         return Err("予定テキストが空です".to_string());
     }
-    let py_dir = repo_python_dir()?;
-    let mut cmd = Command::new("uv");
-    cmd.current_dir(&py_dir).env("PYTHONUTF8", "1").args([
-        "run",
-        "python",
-        "-m",
-        "synchroni_note.pipeline.calendar_parse_sidecar",
-        "-", // 予定テキストは stdin から受け取る
-    ]);
+    let mut cmd = sidecar_base("calendar_parse_sidecar")?;
+    cmd.arg("-"); // 予定テキストは stdin から受け取る
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd
         .spawn()
@@ -168,18 +213,9 @@ fn parse_calendar_text(text: String) -> Result<Value, String> {
 /// `extract_text_blocking`（DD-012-10）と同じ一発取り契約。返りは items 配列
 /// （`{index,name,hostapi,max_input_channels,default}`）。UIのデバイス選択と名前→番号解決で使う。
 fn list_input_devices_blocking() -> Result<Vec<Value>, String> {
-    let py_dir = repo_python_dir()?;
-    let mut cmd = Command::new("uv");
-    cmd.current_dir(&py_dir).env("PYTHONUTF8", "1").args([
-        "run",
-        "python",
-        "-m",
-        "synchroni_note.pipeline.sidecar",
-        "--list-devices",
-    ]);
+    let mut cmd = sidecar_base("sidecar")?;
+    cmd.arg("--list-devices");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let output = cmd
         .output()
@@ -285,15 +321,18 @@ enum StdinMode {
     Feed(String),
 }
 
-/// サイドカー(uv → python -m …)を起動し、stdout(JSON Lines)を Tauri イベントへ中継する。
+/// サイドカー(開発=uv → python -m … / 配布=同梱exe)を起動し、stdout(JSON Lines)を Tauri イベントへ中継する。
 ///
-/// 既存セッションがあれば先に kill（起動しっぱなし防止）。`stdin_mode` で stdin の扱いを切替える
+/// 既存セッションがあれば先に kill（起動しっぱなし防止）。`module` は pipeline 下のモジュール名
+/// （sidecar / summarize_sidecar 等）、`module_args` はそのモジュール固有の引数。起動経路の差
+/// （uv / 同梱exe）は `sidecar_base` に集約（DD-012-6）。`stdin_mode` で stdin の扱いを切替える
 /// （保持して制御 / 一括投入して EOF / 不要）。`relay` で emit するイベント名の系統（stt-* /
 /// summary-*）を選ぶ。reader スレッドで即時 return。
 fn spawn_and_relay(
     app: &AppHandle,
     state: &SttState,
-    args: &[&str],
+    module: &str,
+    module_args: &[&str],
     relay: Relay,
     stdin_mode: StdinMode,
 ) -> Result<(), String> {
@@ -303,22 +342,19 @@ fn spawn_and_relay(
         kill_session(sess);
     }
 
-    let py_dir = repo_python_dir()?;
-    let mut cmd = Command::new("uv");
-    cmd.current_dir(&py_dir)
-        .env("PYTHONUTF8", "1") // 文字化け保険（DA#2）
-        .args(args)
+    // 起動経路（開発=uv / 配布=同梱exe）は sidecar_base に集約（DD-012-6）。PYTHONUTF8 と
+    // コンソール窓抑止（Windows）もそこで設定済み。
+    let mut cmd = sidecar_base(module)?;
+    cmd.args(module_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if !matches!(stdin_mode, StdinMode::None) {
         cmd.stdin(Stdio::piped());
     }
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("サイドカー起動失敗(uv は PATH にある?): {e}"))?;
+        .map_err(|e| format!("サイドカー起動失敗(uv/同梱exe を確認): {e}"))?;
 
     let out = BufReader::new(child.stdout.take().ok_or("stdout を取得できません")?);
     let err = BufReader::new(child.stderr.take().ok_or("stderr を取得できません")?);
@@ -407,17 +443,13 @@ fn start_transcription(
     let threads = cfg_threads.to_string();
     eprintln!("[stt] file model={model} threads={threads}");
     let args = vec![
-        "run",
-        "python",
-        "-m",
-        "synchroni_note.pipeline.sidecar",
         audio_path.as_str(),
         "--model",
         model.as_str(),
         "--threads",
         threads.as_str(),
     ];
-    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::None)
+    spawn_and_relay(&app, state.inner(), "sidecar", &args, Relay::Stt, StdinMode::None)
 }
 
 /// ライブ追い上げ整形（DD-012-4）の設定: use_llm_live が ON なら Some(live_model)、OFF なら None。
@@ -464,7 +496,7 @@ fn start_mic(
         refine_model.is_some(),
         dev_str.as_deref().unwrap_or("default"),
     );
-    let mut args: Vec<&str> = vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar"];
+    let mut args: Vec<&str> = Vec::new();
     match simulate.as_deref() {
         Some(path) => {
             args.push("--simulate");
@@ -485,7 +517,7 @@ fn start_mic(
         args.push("--live-model");
         args.push(live);
     }
-    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
+    spawn_and_relay(&app, state.inner(), "sidecar", &args, Relay::Stt, StdinMode::Control)
 }
 
 /// マイクセッションの stdin に制御コマンド（pause/resume/stop）を1行書く。
@@ -527,8 +559,7 @@ fn start_level(
     // 明示指定（UIがプルダウンの番号を渡す）を優先、無ければ設定の mic_device 名から解決（DD-012-14）。
     let dev = device.or_else(|| resolve_mic_device(&app));
     let dev_str = dev.map(|d| d.to_string());
-    let mut args: Vec<&str> =
-        vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar", "--level"];
+    let mut args: Vec<&str> = vec!["--level"];
     if let Some(path) = simulate.as_deref() {
         args.push("--simulate");
         args.push(path);
@@ -537,7 +568,7 @@ fn start_level(
         args.push("--device");
         args.push(d);
     }
-    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
+    spawn_and_relay(&app, state.inner(), "sidecar", &args, Relay::Stt, StdinMode::Control)
 }
 
 /// 清書(batch)/退避(live)モデル名を設定から読む（DD-012-7）。未設定なら既定へ fallback。
@@ -627,10 +658,6 @@ fn start_summarize(
         vocab_csv.is_some()
     );
     let mut args: Vec<&str> = vec![
-        "run",
-        "python",
-        "-m",
-        "synchroni_note.pipeline.summarize_sidecar",
         "-", // 確定テキストは stdin から受け取る
         "--model",
         batch_model.as_str(),
@@ -652,6 +679,7 @@ fn start_summarize(
     spawn_and_relay(
         &app,
         state.inner(),
+        "summarize_sidecar",
         &args,
         Relay::Summary,
         StdinMode::Feed(transcript),
@@ -665,11 +693,12 @@ fn abort_summarize(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// セッションのプロセスツリーを終了する（uv とその孫 python/whisper を一掃）。
+/// セッションのプロセスツリーを終了する（開発=uv とその孫 python/whisper、配布=同梱exe とその子を一掃）。
 ///
-/// Windows では `uv`(子) を kill しても `python`/whisper(孫) が残りうる（DA-新4）。
-/// `child.kill()` は直接の子(uv)しか終了させないため、`taskkill /T /F /PID` で
-/// **プロセスツリーごと**確実に終了させる（孫まで reap）。
+/// Windows では親(uv / 同梱exe) を kill しても子孫(python/whisper)が残りうる（DA-新4）。
+/// `child.kill()` は直接の子しか終了させないため、`taskkill /T /F /PID` で
+/// **プロセスツリーごと**確実に終了させる（孫まで reap）。配布の同梱exe経路でも PID ツリー
+/// kill なので同じく有効（DD-012-6）。
 fn kill_session(mut sess: SttSession) {
     let pid = sess.child.id();
     #[cfg(windows)]
@@ -712,6 +741,9 @@ pub fn run() {
         .setup(|app| {
             // DB を開いて DbState を manage（DD-012-3 Phase 2）。失敗時は起動を止める。
             db_commands::init(app)?;
+            // DD-012-6: 配布時に同梱した sidecar exe を解決し、以降の起動経路を切替える
+            // （開発時は見つからず None＝uv 経路）。解決は一度だけ。
+            let _ = SIDECAR_EXE.set(resolve_sidecar_exe(app.handle()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
