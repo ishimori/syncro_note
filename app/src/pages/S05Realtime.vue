@@ -5,7 +5,7 @@
 // Phase 3-C: Rust(Tauri)経由でPythonサイドカーの文字起こしを listen し、確定タイムラインへ逐次 push する。
 //   contract: stt-meta / stt-segment / stt-done / stt-error（DD-011/Phase3_実装前詳細化.md §3）
 //   注意: 素のブラウザ(Playwright)には Tauri ランタイムが無く invoke/listen が動かない → ボタンは実ウィンドウ専用。
-import { ref, reactive, onMounted, onUnmounted } from "vue";
+import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter } from "vue-router";
@@ -15,6 +15,7 @@ import { minutesSession } from "../session";
 
 interface AiSeg {
   type: "ai";
+  seq: number; // 追い上げ整形(refined)を後から差し込むキー（DD-012-4）
   speaker: string;
   t: string;
   text: string;
@@ -34,6 +35,7 @@ interface MetaEvent {
   mode?: string; // "mic" のときライブ録音
   model: string;
   language: string;
+  refine?: boolean; // 追い上げ整形が動いているか（DD-012-4・バッジ判定）
 }
 interface SegmentEvent {
   seq: number;
@@ -49,11 +51,21 @@ interface ErrorEvent {
   message: string;
   where?: string;
 }
+// DD-012-4 追い上げ整形イベント
+interface RefinedEvent {
+  seq: number;
+  text: string;
+}
+interface BypassEvent {
+  on: boolean;
+}
 
 const leftDrawer = ref(true);
 
 const drawer = ref(true);
-const showRefined = ref(true);
+const showRefined = ref(true); // 整形の「表示」ON/OFF（計算は止めない）
+const liveRefine = ref(false); // 整形の「実行」ON/OFF（今回ぶん・CPU負荷）。設定値で初期化（DD-012-4）
+const refineActive = ref(false); // 実際に整形が動いている録音か（meta 由来・バッジ判定）
 const bypass = ref(false);
 const elapsed = ref("00:00:00");
 const latency = ref(0);
@@ -76,6 +88,32 @@ const doneCount = ref(0);
 const errorMsg = ref("");
 const isMic = ref(false); // 直近セッションがマイク（ライブ）か
 const isDev = import.meta.env.DEV; // dev専用UI（疑似マイク等）。本番ビルドでは出さない
+
+// 案2（DD-010-1）: 「認識中…」の見える化（フロントのみ・STT非依存）。
+// 長い発話は区切り（無音 or 最大10秒）が来るまで文字にならず、その間「壊れた?」と
+// 誤解されやすい。録音中で直近の確定から少し間が空いたら「認識中…」を出し、
+// ちゃんと動作中だと分かるようにする（混乱防止の最小策）。
+const nowMs = ref(0);
+let lastSegAt = 0; // 直近に確定セグメントが届いた時刻（録音開始でリセット）
+let aliveTimer: ReturnType<typeof setInterval> | undefined;
+const startAlive = (): void => {
+  lastSegAt = Date.now();
+  nowMs.value = Date.now();
+  if (aliveTimer === undefined) {
+    aliveTimer = setInterval(() => {
+      nowMs.value = Date.now();
+    }, 500);
+  }
+};
+const stopAlive = (): void => {
+  if (aliveTimer !== undefined) {
+    clearInterval(aliveTimer);
+    aliveTimer = undefined;
+  }
+};
+// 録音中で、直近の確定から ~1.2秒 以上あいている＝今まさに音声をためて認識中。
+const recognizing = computed(() => status.value === "recording" && nowMs.value - lastSegAt > 1200);
+const waitingS = computed(() => Math.max(0, Math.floor((nowMs.value - lastSegAt) / 1000)));
 
 // 素ブラウザ(Playwright)には Tauri ランタイムが無い → ボタンを無効化してフォールバック。
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -112,7 +150,7 @@ const startMic = async (simulate?: string): Promise<void> => {
   if (!isTauri) return;
   resetSession();
   try {
-    await invoke("start_mic", { simulate: simulate ?? null }); // STTモデル/スレッドは S-08 設定（DD-012-7）
+    await invoke("start_mic", { simulate: simulate ?? null, refine: liveRefine.value }); // STT=S-08設定 / 整形=今回トグル(DD-012-4)
   } catch (e) {
     status.value = "error";
     errorMsg.value = String(e);
@@ -130,6 +168,7 @@ const resumeMic = async (): Promise<void> => {
   try {
     await invoke("resume_mic");
     status.value = "recording";
+    startAlive(); // 再開時も認識中表示の時計を回す（案2）
   } catch (e) {
     errorMsg.value = String(e);
   }
@@ -216,36 +255,59 @@ const endMeeting = async (): Promise<void> => {
 const unlisteners: UnlistenFn[] = [];
 onMounted(async () => {
   if (!isTauri) return;
+  // 整形トグルの初期値を設定（use_llm_live）から取る。読めなければ既定OFF（DD-012-4）。
+  try {
+    const s = await invoke<{ use_llm_live: boolean }>("get_settings");
+    liveRefine.value = s.use_llm_live;
+  } catch {
+    /* 既定OFFのまま */
+  }
   unlisteners.push(
     await listen<MetaEvent>("stt-meta", (e) => {
       durationS.value = e.payload.duration_s ?? 0;
       isMic.value = e.payload.mode === "mic";
+      refineActive.value = e.payload.refine ?? false; // この録音で整形が動いているか
       status.value = isMic.value ? "recording" : "running"; // mic は録音中 / file は受信中
+      if (isMic.value) startAlive(); // 認識中表示の時計を開始（案2・DD-010-1）
     }),
     await listen<SegmentEvent>("stt-segment", (e) => {
       const p = e.payload;
       timeline.push({
         type: "ai",
+        seq: p.seq, // refined を後から差し込むためのキー（DD-012-4）
         speaker: "Speaker_0", // 話者分離は範囲外（暫定固定）
         t: fmtMs(p.t_start_ms),
         text: p.text,
-        refined: null, // LLM整形は範囲外
+        refined: null, // 追い上げ整形（stt-refined）が後から入る
         confirmed: false, // 話者は人間未確定
       });
       elapsed.value = "00:" + fmtMs(p.t_end_ms); // ヘッダの経過＝直近セグメント終端
+      lastSegAt = Date.now(); // 確定が来たら認識中の待ち時計をリセット（案2）
     }),
     await listen<DoneEvent>("stt-done", (e) => {
       doneCount.value = e.payload.count;
       status.value = "done";
+      stopAlive(); // 認識中表示の時計を停止（案2）
     }),
     await listen<ErrorEvent>("stt-error", (e) => {
       errorMsg.value = e.payload.message;
       status.value = "error";
+      stopAlive(); // 認識中表示の時計を停止（案2）
+    }),
+    // DD-012-4: 追い上げ整形。該当 seq の確定行に薄字 refined を後から差し込む。
+    await listen<RefinedEvent>("stt-refined", (e) => {
+      const seg = timeline.find((x) => x.type === "ai" && x.seq === e.payload.seq);
+      if (seg && seg.type === "ai") seg.refined = e.payload.text;
+    }),
+    // DD-012-4: 整形が詰まったらバイパス（ヘッダのバナー表示）。
+    await listen<BypassEvent>("stt-bypass", (e) => {
+      bypass.value = e.payload.on;
     }),
   );
 });
 onUnmounted(() => {
   unlisteners.forEach((u) => u());
+  stopAlive(); // タイマー解放（案2）
 });
 </script>
 
@@ -416,6 +478,19 @@ onUnmounted(() => {
             <q-tooltip>開発用: sample01.wav を mic 経路に流す</q-tooltip>
           </q-btn>
 
+          <!-- リアルタイム整形 ON/OFF（今回ぶん・CPU負荷。録音中は変更不可）DD-012-4 -->
+          <q-toggle
+            v-if="status !== 'recording' && status !== 'paused'"
+            v-model="liveRefine"
+            dense
+            color="primary"
+            icon="auto_fix_high"
+            label="リアルタイム整形"
+            :disable="!isTauri"
+          >
+            <q-tooltip>会議中にAIで文字を整える（CPU負荷増）。OFFで軽くなります。既定は設定(S-08)に従う</q-tooltip>
+          </q-toggle>
+
           <!-- 状態チップ -->
           <q-chip v-if="status === 'preparing'" dense color="amber-3" text-color="grey-9" icon="hourglass_top">
             準備中… <q-spinner-dots color="amber-8" size="1.2em" class="q-ml-xs" />
@@ -437,6 +512,13 @@ onUnmounted(() => {
           </q-chip>
           <q-chip v-else dense color="grey-3" text-color="grey-8" icon="info">
             「録音開始」かサンプルで開始
+          </q-chip>
+
+          <!-- 案2（DD-010-1）: 認識中の見える化。「録音中」チップと並べ、長い発話で確定が出ない間も動作中だと示す。 -->
+          <q-chip v-if="recognizing" dense color="deep-orange-2" text-color="deep-orange-10" icon="graphic_eq">
+            認識中… 約{{ waitingS }}秒ぶんを処理中
+            <q-spinner-dots color="deep-orange-9" size="1.1em" class="q-ml-xs" />
+            <q-tooltip>長い発話は区切りがつくまで文字になりません（仕様）。処理は動いています</q-tooltip>
           </q-chip>
         </div>
 
@@ -470,7 +552,13 @@ onUnmounted(() => {
                       </q-menu>
                     </q-badge>
                     <span class="text-caption text-grey-6">{{ s.t }}</span>
-                    <q-badge v-if="!s.refined" outline color="grey-6" label="unrefined" class="q-ml-sm">
+                    <q-badge
+                      v-if="!s.refined && refineActive"
+                      outline
+                      color="grey-6"
+                      label="unrefined"
+                      class="q-ml-sm"
+                    >
                       <q-tooltip>整形待ち（生テキスト表示中）</q-tooltip>
                     </q-badge>
                   </div>
@@ -486,7 +574,10 @@ onUnmounted(() => {
               <q-icon name="graphic_eq" size="28px" class="q-mb-xs" />
               <div v-if="status === 'preparing'">モデル読込中… 最初の文字起こしまで少しかかります</div>
               <div v-else-if="status === 'recording' || status === 'paused'">
-                マイク入力待ち…（話すと文字が出ます）
+                <template v-if="recognizing">
+                  ● 認識中…（最初の区切りまで少しかかります。長い発話はまとまってから文字になります）
+                </template>
+                <template v-else>マイク入力待ち…（話すと文字が出ます）</template>
               </div>
               <div v-else>まだ文字起こしはありません。「録音開始」かサンプルで開始してください。</div>
             </div>
