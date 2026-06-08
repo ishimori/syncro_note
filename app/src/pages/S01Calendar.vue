@@ -1,19 +1,35 @@
 <script setup lang="ts">
-// S-01 ホーム／カレンダー — DD-012-3 Phase 2: SQLite 実データ表示。
-// 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-01_calendar.html。
+// S-01 ホーム／カレンダー — DD-012-3 で SQLite 実データ表示、DD-012-9 で操作強化。
+// 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/DD/DD-012-9/mock/S-01_calendar.html。
 // 当月の会議を Rust(Tauri)経由で SQLite から読み込み、月カレンダーに配置する。
+// DD-012-9 で追加した操作（いずれも実DB・invoke は実ウィンドウ専用）:
+//   - チップ全体クリックで操作メニュー（開く/編集/書き出し(completedのみ)/削除）
+//   - チップを別日へドラッグ&ドロップして予定日時を更新（scheduled/completed のみ・時刻と所要時間は維持）
+//   - 削除は確認ダイアログ→数秒の「元に戻す」（削除前に詳細を退避し create_meeting で再作成）
+//   - 空きセルの＋でその日の新規会議作成へ
 // dev では確認用シード(seed_demo・冪等)を投入してから読み込む（DD-012-3-1）。
-// チップのクリックで遷移: completed→/s03(id付), active/generating→/s05, その他→/s02。
 //   注意: invoke は Tauri ランタイム上でのみ動く（素のブラウザ/Playwright では不可）。
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { useQuasar } from "quasar";
 import AppNav from "../components/AppNav.vue";
-import { listMeetings, seedDemo, type Meeting as DbMeeting, type MeetingStatus } from "../api";
+import {
+  listMeetings,
+  seedDemo,
+  deleteMeeting,
+  updateMeetingSchedule,
+  getMeetingDetail,
+  createMeeting,
+  localIso,
+  type Meeting as DbMeeting,
+  type MeetingDetail,
+  type MeetingStatus,
+} from "../api";
 
 const leftDrawer = ref(true);
 const router = useRouter();
+const $q = useQuasar();
 
-const view = ref<"month" | "week">("month");
 const weekdays: string[] = ["日", "月", "火", "水", "木", "金", "土"];
 
 const today = new Date();
@@ -80,6 +96,14 @@ interface CalendarCell {
 const dayOf = (iso: string): number => Number(iso.slice(8, 10));
 const timeOf = (iso: string): string => iso.slice(11, 16);
 
+// "YYYY-MM-DDTHH:MM:SS" をローカル時刻として解釈する（new Date(string) はUTC扱いの罠があるため手組み）。
+const parseLocalIso = (iso: string): Date => {
+  const [d, t] = iso.split("T");
+  const [y, mo, da] = d.split("-").map(Number);
+  const [h, mi, s] = (t || "00:00:00").split(":").map(Number);
+  return new Date(y, mo - 1, da, h || 0, mi || 0, s || 0);
+};
+
 const byDay = computed<Record<number, CellMeeting[]>>(() => {
   const map: Record<number, CellMeeting[]> = {};
   for (const m of dbMeetings.value) {
@@ -122,11 +146,157 @@ const statusIcon = (s: MeetingStatus): string =>
     s
   ] || "event";
 
+// ===== 操作メニュー =====
 // completed→議事録詳細(/s03 に id)、進行中/生成中→会議画面(/s05)、その他→会議作成(/s02)
 const openMeeting = (m: CellMeeting): void => {
   if (m.status === "completed") router.push({ path: "/s03", query: { id: m.id } });
   else if (m.status === "active" || m.status === "generating") router.push("/s05");
   else router.push("/s02");
+};
+
+// 編集（DD-012-9 Phase 4）: S-02 を編集モード（?id=）で開く。
+const editMeeting = (m: CellMeeting): void => {
+  router.push({ path: "/s02", query: { id: m.id } });
+};
+
+// 書き出し（DD-012-9 Phase 4）: 完了議事録(Markdown)をクリップボードへコピー（依存なし）。
+const exportMinutes = async (m: CellMeeting): Promise<void> => {
+  const md = dbMeetings.value.find((x) => x.id === m.id)?.final_minutes ?? "";
+  if (!md) {
+    $q.notify({ message: "この会議には書き出せる議事録がありません", color: "orange-8", icon: "info" });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(md);
+    $q.notify({ message: `「${m.title}」の議事録をコピーしました`, color: "indigo", icon: "content_copy", timeout: 2000 });
+  } catch {
+    $q.notify({ message: "コピーに失敗しました", color: "negative", icon: "error" });
+  }
+};
+
+// ===== 空きセルから新規作成 =====
+const createAt = (cell: CalendarCell): void => {
+  if (!cell.inMonth) return;
+  const date = `${year.value}-${String(month0.value + 1).padStart(2, "0")}-${String(cell.day).padStart(2, "0")}`;
+  router.push({ path: "/s02", query: { date } });
+};
+
+// ===== ドラッグ&ドロップで移動 =====
+// 暴発防止: scheduled / completed のみドラッグ可（進行中 active・生成中 generating は動かさない）。
+const canDrag = (s: MeetingStatus): boolean => s === "scheduled" || s === "completed";
+const draggingId = ref<string | null>(null);
+const dragOverDay = ref<number | null>(null);
+
+const onDragStart = (m: CellMeeting, ev: DragEvent): void => {
+  if (!canDrag(m.status)) {
+    ev.preventDefault();
+    return;
+  }
+  draggingId.value = m.id;
+  if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+};
+const onDragEnd = (): void => {
+  draggingId.value = null;
+  dragOverDay.value = null;
+};
+const onDragOver = (cell: CalendarCell): void => {
+  if (cell.inMonth) dragOverDay.value = cell.day;
+};
+const onDragLeave = (cell: CalendarCell): void => {
+  if (dragOverDay.value === cell.day) dragOverDay.value = null;
+};
+const onDrop = async (cell: CalendarCell): Promise<void> => {
+  const id = draggingId.value;
+  draggingId.value = null;
+  dragOverDay.value = null;
+  if (!id || !cell.inMonth) return;
+  const m = dbMeetings.value.find((x) => x.id === id);
+  if (!m) return;
+  const oldStart = parseLocalIso(m.scheduled_start);
+  // 同じ日へのドロップは何もしない。
+  if (
+    oldStart.getFullYear() === year.value &&
+    oldStart.getMonth() === month0.value &&
+    oldStart.getDate() === cell.day
+  ) {
+    return;
+  }
+  // 時刻は維持し日付だけ差し替え、終了は元の所要時間を保って平行移動。
+  const newStart = new Date(
+    year.value,
+    month0.value,
+    cell.day,
+    oldStart.getHours(),
+    oldStart.getMinutes(),
+    oldStart.getSeconds(),
+  );
+  const prevStartIso = m.scheduled_start;
+  const prevEndIso = m.scheduled_end;
+  let newEndIso: string | null = null;
+  if (m.scheduled_end) {
+    const dur = parseLocalIso(m.scheduled_end).getTime() - oldStart.getTime();
+    newEndIso = localIso(new Date(newStart.getTime() + dur));
+  }
+  try {
+    await updateMeetingSchedule(id, localIso(newStart), newEndIso, localIso());
+    await load();
+    $q.notify({
+      message: `「${m.title}」を ${month0.value + 1}/${cell.day} へ移動しました`,
+      color: "primary",
+      icon: "event",
+      timeout: 3000,
+      actions: [
+        {
+          label: "元に戻す",
+          color: "amber",
+          handler: () => {
+            void updateMeetingSchedule(id, prevStartIso, prevEndIso ?? null, localIso()).then(load);
+          },
+        },
+      ],
+    });
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+};
+
+// ===== 削除（確認＋元に戻す） =====
+const askDelete = (m: CellMeeting): void => {
+  $q.dialog({
+    title: "削除の確認",
+    message: `「${m.title}」を削除します。よろしいですか？<br><span style="color:#9ca3af;font-size:12px">参加者・文字起こしも一緒に消えます</span>`,
+    html: true,
+    persistent: true,
+    cancel: { label: "キャンセル", flat: true, color: "grey-8" },
+    ok: { label: "削除", color: "negative", unelevated: true },
+  }).onOk(() => void doDelete(m));
+};
+const doDelete = async (m: CellMeeting): Promise<void> => {
+  try {
+    // 元に戻す用に、削除前の詳細（本体＋参加者＋タイムライン）を退避する。
+    const snap = await getMeetingDetail(m.id);
+    await deleteMeeting(m.id);
+    await load();
+    $q.notify({
+      message: `「${m.title}」を削除しました`,
+      color: "grey-9",
+      icon: "delete",
+      timeout: 6000,
+      actions: snap
+        ? [{ label: "元に戻す", color: "amber", handler: () => void restore(snap) }]
+        : [],
+    });
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+};
+const restore = async (snap: MeetingDetail): Promise<void> => {
+  try {
+    await createMeeting(snap.meeting, snap.participants, snap.timeline);
+    await load();
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
 };
 </script>
 
@@ -159,16 +329,6 @@ const openMeeting = (m: CellMeeting): void => {
           <q-btn outline no-caps dense label="今日" class="q-ml-sm" @click="goToday" />
           <q-spinner v-if="loading" color="primary" size="20px" class="q-ml-sm" />
           <q-space />
-          <q-btn-toggle
-            v-model="view"
-            no-caps
-            unelevated
-            toggle-color="primary"
-            :options="[
-              { label: '月', value: 'month' },
-              { label: '週', value: 'week' },
-            ]"
-          />
         </div>
 
         <!-- 凡例 -->
@@ -176,7 +336,7 @@ const openMeeting = (m: CellMeeting): void => {
           <q-badge color="blue-5" label="予約 scheduled" />
           <q-badge color="red-5" label="進行中 active" />
           <q-badge color="green-6" label="完了 completed" />
-          <span class="q-ml-md">完了をクリック→議事録詳細、当日/未来→会議作成、進行中→会議画面</span>
+          <span class="q-ml-md">予定をクリック→メニュー（開く/編集/書き出し/削除）／ドラッグで別日へ移動</span>
         </div>
 
         <!-- カレンダー -->
@@ -189,24 +349,72 @@ const openMeeting = (m: CellMeeting): void => {
               class="col cal-cell q-pa-xs"
               v-for="(d, di) in week"
               :key="di"
-              :class="{ dim: !d.inMonth, today: d.today }"
+              :class="{ dim: !d.inMonth, today: d.today, dragover: dragOverDay === d.day && d.inMonth }"
+              @dragover.prevent="onDragOver(d)"
+              @dragleave="onDragLeave(d)"
+              @drop="onDrop(d)"
             >
-              <div class="row items-center">
+              <!-- 日付行＋空き枠の＋ -->
+              <div class="row items-center no-wrap">
                 <div class="text-weight-medium">{{ d.day }}</div>
                 <q-badge v-if="d.today" color="primary" class="q-ml-xs">今日</q-badge>
+                <q-space />
+                <q-btn
+                  v-if="d.inMonth"
+                  flat
+                  dense
+                  round
+                  size="9px"
+                  icon="add"
+                  color="primary"
+                  class="add-btn"
+                  @click="createAt(d)"
+                >
+                  <q-tooltip>この日に会議を作成</q-tooltip>
+                </q-btn>
               </div>
+
+              <!-- 予定/議事録チップ（全体クリックでメニュー、ドラッグで移動） -->
               <q-chip
-                v-for="(m, mi) in d.meetings"
-                :key="mi"
+                v-for="m in d.meetings"
+                :key="m.id"
                 dense
                 clickable
-                class="meet-chip q-ma-none q-mt-xs full-width justify-start"
+                :draggable="canDrag(m.status)"
+                @dragstart="onDragStart(m, $event)"
+                @dragend="onDragEnd"
+                class="meet-chip q-ma-none q-mt-xs full-width justify-start no-wrap"
+                :class="{ 'meet-chip--drag': canDrag(m.status) }"
                 :color="statusColor(m.status)"
                 text-color="white"
-                @click="openMeeting(m)"
               >
                 <q-icon :name="statusIcon(m.status)" size="14px" class="q-mr-xs" />
-                {{ m.time }} {{ m.title }}
+                <span class="ellipsis">{{ m.time }} {{ m.title }}</span>
+                <q-icon name="expand_more" size="14px" class="q-ml-auto" />
+                <q-menu auto-close anchor="bottom left" self="top left">
+                  <q-list dense style="min-width: 168px">
+                    <q-item-label header class="q-py-xs ellipsis" style="max-width: 240px">
+                      {{ m.time }} {{ m.title }}
+                    </q-item-label>
+                    <q-item clickable @click="openMeeting(m)">
+                      <q-item-section avatar><q-icon name="open_in_new" /></q-item-section>
+                      <q-item-section>開く</q-item-section>
+                    </q-item>
+                    <q-item clickable @click="editMeeting(m)">
+                      <q-item-section avatar><q-icon name="edit" /></q-item-section>
+                      <q-item-section>編集</q-item-section>
+                    </q-item>
+                    <q-item v-if="m.status === 'completed'" clickable @click="exportMinutes(m)">
+                      <q-item-section avatar><q-icon name="download" /></q-item-section>
+                      <q-item-section>書き出し</q-item-section>
+                    </q-item>
+                    <q-separator />
+                    <q-item clickable @click="askDelete(m)" class="text-negative">
+                      <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>
+                      <q-item-section>削除</q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-menu>
               </q-chip>
             </div>
           </div>
@@ -229,6 +437,8 @@ const openMeeting = (m: CellMeeting): void => {
 .cal-cell {
   min-height: 104px;
   border: 1px solid #e5e7eb;
+  position: relative;
+  transition: background 0.12s, outline 0.12s;
 }
 .cal-cell.dim {
   background: #fafafa;
@@ -238,6 +448,11 @@ const openMeeting = (m: CellMeeting): void => {
   outline: 2px solid var(--q-primary);
   outline-offset: -2px;
 }
+.cal-cell.dragover {
+  outline: 2px dashed var(--q-secondary);
+  outline-offset: -2px;
+  background: #ecfeff;
+}
 .cal-head {
   font-size: 12px;
   color: #6b7280;
@@ -245,5 +460,22 @@ const openMeeting = (m: CellMeeting): void => {
 .meet-chip {
   font-size: 11px;
   cursor: pointer;
+}
+.meet-chip--drag {
+  cursor: grab;
+}
+.meet-chip--drag:active {
+  cursor: grabbing;
+}
+/* 空き枠の「＋」はセルにホバーした時だけ薄く出す */
+.add-btn {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cal-cell:hover .add-btn {
+  opacity: 0.55;
+}
+.add-btn:hover {
+  opacity: 1;
 }
 </style>

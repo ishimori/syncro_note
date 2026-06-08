@@ -61,6 +61,8 @@ fn relay_event(relay: Relay, ty: Option<&str>) -> Option<&'static str> {
             Some("done") => Some("stt-done"),
             Some("error") => Some("stt-error"),
             Some("level") => Some("stt-level"), // S-04 入力レベル（DD-012-8）
+            Some("refined") => Some("stt-refined"), // DD-012-4 追い上げ整形
+            Some("bypass") => Some("stt-bypass"), // DD-012-4 整形バイパス
             _ => None,
         },
         Relay::Summary => match ty {
@@ -219,19 +221,43 @@ fn start_transcription(
     spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::None)
 }
 
+/// ライブ追い上げ整形（DD-012-4）の設定: use_llm_live が ON なら Some(live_model)、OFF なら None。
+fn live_refine_model(app: &AppHandle, on_override: Option<bool>) -> Option<String> {
+    let state = app.state::<db_commands::DbState>();
+    let conn = state.0.lock().ok()?;
+    let s = db::get_settings(&conn).ok()?;
+    // 今回ぶんの上書き（S-05 トグル）があれば優先、無ければ設定値 use_llm_live。
+    if !on_override.unwrap_or(s.use_llm_live) {
+        return None; // OFF＝整形ワーカーを起動せず qwen を一切ロードしない（追加コスト0）
+    }
+    // live ドロップダウンで「（無効）」/空 を選んだ場合も整形OFF扱い（無効モデルで空振りさせない）。
+    let model = s.live_model.unwrap_or_default();
+    let m = model.trim().to_string();
+    if m.is_empty() || m == "（無効）" || m == "無効" || m.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    Some(m)
+}
+
 /// マイクからライブ文字起こし（DD-012-1）。`simulate` 指定時はファイルを mic 代替で流す（dev/テスト）。
-/// stdin をパイプして pause/resume/stop を受け付ける。
+/// stdin をパイプして pause/resume/stop を受け付ける。`use_llm_live` 時は追い上げ整形も起動（DD-012-4）。
 #[tauri::command]
 fn start_mic(
     app: AppHandle,
     state: State<'_, SttState>,
     model: Option<String>,
     simulate: Option<String>,
+    refine: Option<bool>,
 ) -> Result<(), String> {
     let (cfg_model, cfg_threads) = stt_settings(&app);
     let model = model.unwrap_or(cfg_model); // S-08 設定の STT モデル（DD-012-7）
     let threads = cfg_threads.to_string();
-    eprintln!("[stt] mic model={model} threads={threads} simulate={}", simulate.is_some());
+    let refine_model = live_refine_model(&app, refine); // DD-012-4: 今回ぶん上書き or 設定値
+    eprintln!(
+        "[stt] mic model={model} threads={threads} simulate={} refine={}",
+        simulate.is_some(),
+        refine_model.is_some()
+    );
     let mut args: Vec<&str> = vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar"];
     match simulate.as_deref() {
         Some(path) => {
@@ -244,6 +270,11 @@ fn start_mic(
     args.push(model.as_str());
     args.push("--threads");
     args.push(threads.as_str());
+    if let Some(live) = refine_model.as_deref() {
+        args.push("--refine");
+        args.push("--live-model");
+        args.push(live);
+    }
     spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
 }
 
@@ -413,6 +444,9 @@ pub fn run() {
             abort_summarize,
             db_commands::list_meetings,
             db_commands::create_meeting,
+            db_commands::update_meeting,
+            db_commands::update_meeting_schedule,
+            db_commands::delete_meeting,
             db_commands::get_meeting_detail,
             db_commands::seed_demo,
             db_commands::get_settings,

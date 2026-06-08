@@ -29,6 +29,10 @@ import threading
 import time
 from pathlib import Path
 
+# ライブ追い上げ整形（DD-012-4）の調整値。
+REFINE_QUEUE_MAX = 3  # 未処理バックログ上限。超えたら整形を捨てる（バイパス＝主役を止めない）
+REFINE_DRAIN_TIMEOUT_S = 20.0  # 停止時に整形ワーカーの残りを掃き出す最大待ち秒
+
 
 def emit(obj: dict[str, object]) -> None:
     """1行=1JSON を stdout へ書き出す。
@@ -112,6 +116,37 @@ def _run_realtime(args: argparse.Namespace) -> int:
     t0 = time.perf_counter()
     count = 0
 
+    # ライブ追い上げ整形（DD-012-4）。確定セグメントを別スレッドで qwen 整形し refined を emit。
+    # STT を詰まらせないため非ブロッキング: 小さな bounded queue、満杯ならバイパス（整形を捨てる）。
+    import queue
+
+    refine_q: queue.Queue | None = None
+    refine_worker: threading.Thread | None = None
+    bypass = {"on": False}
+    if args.refine:
+        refine_q = queue.Queue(maxsize=REFINE_QUEUE_MAX)
+
+        def _refine_loop(q: queue.Queue) -> None:
+            from synchroni_note.pipeline.refine import refine_text
+
+            while True:
+                item = q.get()
+                if item is None:  # 停止センチネル
+                    break
+                seq, raw = item
+                try:
+                    r = refine_text(raw, model=args.live_model)
+                except Exception as e:  # noqa: BLE001  整形失敗で STT を止めない
+                    print(f"[refine] {e!r}", file=sys.stderr, flush=True)
+                    continue
+                if r:
+                    emit({"type": "refined", "seq": seq, "text": r})
+
+        refine_worker = threading.Thread(
+            target=_refine_loop, args=(refine_q,), daemon=True, name="refine"
+        )
+        refine_worker.start()
+
     def sink(ch) -> None:  # noqa: ANN001  Chunk（capture.Chunk）
         nonlocal count
         text = _transcribe(wm, ch.samples).strip()
@@ -125,6 +160,17 @@ def _run_realtime(args: argparse.Namespace) -> int:
             }
         )
         count += 1
+        # 追い上げ整形へ回す（非ブロッキング）。満杯なら捨ててバイパス表示（主役は止めない）。
+        if refine_q is not None and text:
+            try:
+                refine_q.put_nowait((ch.seq, text))
+                if bypass["on"]:
+                    bypass["on"] = False
+                    emit({"type": "bypass", "on": False})
+            except queue.Full:
+                if not bypass["on"]:
+                    bypass["on"] = True
+                    emit({"type": "bypass", "on": True})
 
     try:
         if args.simulate is not None:
@@ -139,12 +185,21 @@ def _run_realtime(args: argparse.Namespace) -> int:
                     "duration_s": round(len(audio) / SAMPLE_RATE, 3),
                     "model": args.model,
                     "language": args.language,
+                    "refine": args.refine,  # 追い上げ整形が動いているか（S-05 のバッジ表示判定）
                 }
             )
             feed_samples(audio, VadChunker(max_seg_s=args.max_seg), sink=sink)
         else:
             # 実マイク。ライブなので duration_s は出さない。
-            emit({"type": "meta", "mode": "mic", "model": args.model, "language": args.language})
+            emit(
+                {
+                    "type": "meta",
+                    "mode": "mic",
+                    "model": args.model,
+                    "language": args.language,
+                    "refine": args.refine,  # 追い上げ整形が動いているか（S-05 のバッジ表示判定）
+                }
+            )
             stop_event = threading.Event()
             paused = threading.Event()
             _start_stdin_control(stop_event, paused)
@@ -156,6 +211,10 @@ def _run_realtime(args: argparse.Namespace) -> int:
                 paused=paused,
             )
         emit({"type": "done", "count": count, "elapsed_s": round(time.perf_counter() - t0, 3)})
+        # 整形ワーカーの残りを掃き出してから終了（trailing refined を落とさない）。
+        if refine_q is not None and refine_worker is not None:
+            refine_q.put(None)
+            refine_worker.join(timeout=REFINE_DRAIN_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001
         emit({"type": "error", "message": str(e), "where": "mic"})
         print(f"[sidecar] {e!r}", file=sys.stderr, flush=True)
@@ -246,6 +305,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--threads", type=int, default=4, help="cpu_threads(realtime)")
     parser.add_argument("--max-seg", type=float, default=10.0, help="VADチャンク最大秒")
     parser.add_argument("--device", type=int, default=None, help="入力デバイス番号(既定=None)")
+    parser.add_argument(
+        "--refine", action="store_true", help="確定セグメントをlive LLMで追い上げ整形(DD-012-4)"
+    )
+    parser.add_argument("--live-model", default="qwen3:8b", help="追い上げ整形のOllamaモデル")
     args = parser.parse_args(argv)
 
     try:

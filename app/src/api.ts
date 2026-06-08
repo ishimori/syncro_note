@@ -68,6 +68,24 @@ export const createMeeting = (
 export const getMeetingDetail = (id: string): Promise<MeetingDetail | null> =>
   invoke<MeetingDetail | null>("get_meeting_detail", { id });
 
+/** 会議を1件削除（DD-012-9）。参加者・タイムライン・添付・用語は CASCADE で連動削除。 */
+export const deleteMeeting = (id: string): Promise<void> =>
+  invoke<void>("delete_meeting", { id });
+
+/** 予定日時のみ更新（S-01 ドラッグ移動 / DD-012-9）。end は無ければ null。時刻維持は呼び出し側で確定。 */
+export const updateMeetingSchedule = (
+  id: string,
+  scheduledStart: string,
+  scheduledEnd: string | null,
+  updatedAt: string,
+): Promise<void> =>
+  invoke<void>("update_meeting_schedule", { id, scheduledStart, scheduledEnd, updatedAt });
+
+/** 会議の編集（S-02 編集モード / DD-012-9）。会議行を更新。`participants` 省略時は参加者に触れない
+ *  （完了会議の話者リンク保全用）。渡した場合は全入替。 */
+export const updateMeeting = (meeting: Meeting, participants?: Participant[]): Promise<void> =>
+  invoke<void>("update_meeting", { meeting, participants: participants ?? null });
+
 /** 確認用デモデータ投入（dev のみ・冪等）。当月の year/month を渡す。 */
 export const seedDemo = (year: number, month: number): Promise<void> =>
   invoke<void>("seed_demo", { year, month });

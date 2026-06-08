@@ -206,6 +206,47 @@ pub fn save_final_minutes(
     Ok(())
 }
 
+/// 予定日時のみ更新する（S-01 ドラッグ移動 / DD-012-9）。`scheduled_end` は無ければ NULL。
+/// 時刻維持・所要時間維持は呼び出し側（frontend）で確定して渡す（本層は時計に依存しない）。
+pub fn update_meeting_schedule(
+    conn: &Connection,
+    id: &str,
+    scheduled_start: &str,
+    scheduled_end: Option<&str>,
+    updated_at: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE meetings SET scheduled_start = ?2, scheduled_end = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![id, scheduled_start, scheduled_end, updated_at],
+    )?;
+    Ok(())
+}
+
+/// 会議の編集可能項目（タイトル/アジェンダ/場所/予定日時）を更新する（S-02 編集モード / DD-012-9）。
+/// `status`・`final_minutes`・実績時刻・`created_at` には触れない（編集UIの責務外）。
+pub fn update_meeting(conn: &Connection, m: &Meeting) -> Result<()> {
+    conn.execute(
+        "UPDATE meetings SET
+            title = ?2, agenda = ?3, place = ?4,
+            scheduled_start = ?5, scheduled_end = ?6, updated_at = ?7
+         WHERE id = ?1",
+        params![
+            m.id, m.title, m.agenda, m.place,
+            m.scheduled_start, m.scheduled_end, m.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 会議を1件削除する（S-01 削除 / DD-012-9）。`participants` / `timeline_elements` /
+/// `attachments` / `vocabularies` は **ON DELETE CASCADE** で連動削除される。
+/// 存在しないIDでもエラーにせず 0 行更新で正常終了する（冪等な削除）。
+pub fn delete_meeting(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM meetings WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 // ============ participants ============
 
 /// 参加者を1件挿入（会議作成 S-02）。
@@ -236,6 +277,15 @@ pub fn list_participants(conn: &Connection, meeting_id: &str) -> Result<Vec<Part
         })
     })?;
     rows.collect()
+}
+
+/// 会議の参加者を全削除する（S-02 編集での「全入替」前処理 / DD-012-9）。
+pub fn delete_participants(conn: &Connection, meeting_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM participants WHERE meeting_id = ?1",
+        params![meeting_id],
+    )?;
+    Ok(())
 }
 
 // ============ timeline_elements ============
@@ -625,7 +675,7 @@ mod tests {
         assert_eq!(def.stt_model.as_deref(), Some("whisper base"));
         assert_eq!(def.live_model.as_deref(), Some("qwen3:8b"));
         assert_eq!(def.whisper_n_threads, Some(4));
-        assert!(def.use_llm_live);
+        assert!(!def.use_llm_live); // 既定OFF（DD-012-4: 非力環境配慮）
         assert!(!def.keep_audio);
         // 変更を保存して完全往復（日本語含むデバイス名も）。
         let mut s = def.clone();
@@ -636,5 +686,148 @@ mod tests {
         s.updated_at = "2026-06-08T12:00:00".into();
         save_settings(&conn, &s).unwrap();
         assert_eq!(get_settings(&conn).unwrap(), s);
+    }
+
+    #[test]
+    fn delete_meeting_cascades_and_is_idempotent() {
+        // DD-012-9: 削除で子（participants/timeline）も連動消去。存在しないIDは無害。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "completed")).unwrap();
+        insert_participant(
+            &conn,
+            &Participant {
+                id: "p1".into(),
+                meeting_id: "m1".into(),
+                name: "山田".into(),
+                role: None,
+                voice_hint: None,
+                sort_order: Some(0),
+            },
+        )
+        .unwrap();
+        insert_timeline_element(
+            &conn,
+            &TimelineElement {
+                id: "e1".into(),
+                meeting_id: "m1".into(),
+                seq: 0,
+                kind: "ai_transcription".into(),
+                speaker_id: Some(1),
+                t_ms: 0,
+                text_raw: "あ".into(),
+                text_refined: None,
+                is_refined: false,
+                created_at: "2026-06-08T10:00:00".into(),
+            },
+        )
+        .unwrap();
+        delete_meeting(&conn, "m1").unwrap();
+        assert!(get_meeting(&conn, "m1").unwrap().is_none());
+        assert!(list_participants(&conn, "m1").unwrap().is_empty()); // CASCADE
+        assert!(list_timeline(&conn, "m1").unwrap().is_empty()); // CASCADE
+        delete_meeting(&conn, "missing").unwrap(); // 存在しないIDでもOK（0行）
+    }
+
+    #[test]
+    fn update_schedule_changes_datetime_only() {
+        // DD-012-9: ドラッグ移動。start/end/updated_at のみ変わり status 等は不変。
+        let conn = open_in_memory().unwrap();
+        let mut m = meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled");
+        m.scheduled_end = Some("2026-06-08T11:00:00".into());
+        insert_meeting(&conn, &m).unwrap();
+        update_meeting_schedule(
+            &conn,
+            "m1",
+            "2026-06-10T10:00:00",
+            Some("2026-06-10T11:00:00"),
+            "2026-06-08T12:00:00",
+        )
+        .unwrap();
+        let got = get_meeting(&conn, "m1").unwrap().unwrap();
+        assert_eq!(got.scheduled_start, "2026-06-10T10:00:00");
+        assert_eq!(got.scheduled_end.as_deref(), Some("2026-06-10T11:00:00"));
+        assert_eq!(got.updated_at, "2026-06-08T12:00:00");
+        assert_eq!(got.status, "scheduled"); // 移動では status を触らない
+        // 終日（end なし）へも更新できる。
+        update_meeting_schedule(&conn, "m1", "2026-06-11T09:00:00", None, "2026-06-08T12:30:00").unwrap();
+        assert!(get_meeting(&conn, "m1").unwrap().unwrap().scheduled_end.is_none());
+    }
+
+    #[test]
+    fn update_meeting_edits_fields_but_not_status_or_minutes() {
+        // DD-012-9: 編集は title/agenda/place/予定日時のみ。status・清書本文は保たれる。
+        let conn = open_in_memory().unwrap();
+        let mut m = meeting("m1", "旧タイトル", "2026-06-08T10:00:00", "completed");
+        m.final_minutes = Some("## 議事録".into());
+        m.batch_model = Some("gemma4:26b".into());
+        insert_meeting(&conn, &m).unwrap();
+        let edited = Meeting {
+            title: "新タイトル".into(),
+            agenda: Some("新アジェンダ".into()),
+            place: Some("会議室B".into()),
+            scheduled_start: "2026-06-09T14:00:00".into(),
+            scheduled_end: Some("2026-06-09T15:00:00".into()),
+            updated_at: "2026-06-08T12:00:00".into(),
+            ..m.clone()
+        };
+        update_meeting(&conn, &edited).unwrap();
+        let got = get_meeting(&conn, "m1").unwrap().unwrap();
+        assert_eq!(got.title, "新タイトル");
+        assert_eq!(got.agenda.as_deref(), Some("新アジェンダ"));
+        assert_eq!(got.place.as_deref(), Some("会議室B"));
+        assert_eq!(got.scheduled_start, "2026-06-09T14:00:00");
+        assert_eq!(got.updated_at, "2026-06-08T12:00:00");
+        assert_eq!(got.status, "completed"); // 編集の責務外は不変
+        assert_eq!(got.final_minutes.as_deref(), Some("## 議事録"));
+        assert_eq!(got.batch_model.as_deref(), Some("gemma4:26b"));
+    }
+
+    #[test]
+    fn update_meeting_keeps_existing_participants() {
+        // DD-012-9 Phase 4: 会議行だけ更新する経路（command の participants=None 相当）では
+        // 参加者を消さない（完了会議の話者リンク保全の土台）。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "旧", "2026-06-08T10:00:00", "completed")).unwrap();
+        insert_participant(
+            &conn,
+            &Participant {
+                id: "p1".into(),
+                meeting_id: "m1".into(),
+                name: "田中".into(),
+                role: None,
+                voice_hint: None,
+                sort_order: Some(0),
+            },
+        )
+        .unwrap();
+        let mut edited = get_meeting(&conn, "m1").unwrap().unwrap();
+        edited.title = "新".into();
+        edited.updated_at = "2026-06-08T12:00:00".into();
+        update_meeting(&conn, &edited).unwrap();
+        assert_eq!(get_meeting(&conn, "m1").unwrap().unwrap().title, "新");
+        assert_eq!(list_participants(&conn, "m1").unwrap().len(), 1); // 参加者は残る
+    }
+
+    #[test]
+    fn delete_participants_clears_for_edit_replace() {
+        // DD-012-9: 編集の「参加者を全入替」前処理。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled")).unwrap();
+        for (id, name, order) in [("p1", "田中", 0_i64), ("p2", "鈴木", 1)] {
+            insert_participant(
+                &conn,
+                &Participant {
+                    id: id.into(),
+                    meeting_id: "m1".into(),
+                    name: name.into(),
+                    role: None,
+                    voice_hint: None,
+                    sort_order: Some(order),
+                },
+            )
+            .unwrap();
+        }
+        delete_participants(&conn, "m1").unwrap();
+        assert!(list_participants(&conn, "m1").unwrap().is_empty());
     }
 }

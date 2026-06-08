@@ -57,7 +57,7 @@ const batches = [
   { value: "Qwen3-30B-A3B", label: "Qwen3-30B-A3B", caption: "比較用の候補。やや大きめでメモリも多めに要る" },
 ];
 const batch = ref<string>("gemma4:26b");
-const useLlmLive = ref<boolean>(true);
+const useLlmLive = ref<boolean>(false); // 既定OFF（DD-012-4: 非力環境配慮。録音時の負荷を足さない）
 const kvOptions: string[] = ["f16", "q8_0"];
 const kv = ref<string>("q8_0");
 

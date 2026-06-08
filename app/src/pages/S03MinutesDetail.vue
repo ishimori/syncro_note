@@ -6,11 +6,13 @@
 //   注意: invoke は Tauri ランタイム上でのみ動く（素のブラウザ/Playwright では不可）。
 import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
+import { useQuasar } from "quasar";
 import AppNav from "../components/AppNav.vue";
 import { listMeetings, getMeetingDetail, type MeetingDetail, type Meeting } from "../api";
 
 const router = useRouter();
 const route = useRoute();
+const $q = useQuasar();
 
 const leftDrawer = ref(true);
 const completed = ref<Meeting[]>([]); // 過去の議事録一覧（completed）
@@ -115,6 +117,21 @@ const participantsLabel = computed<string[]>(() =>
 
 const speakerName = (e: { kind: string; speaker_id: number | null }): string =>
   e.kind === "human_memo" ? "📝人間メモ" : `話者 ${e.speaker_id ?? "?"}`;
+
+// 書き出し（DD-012-9 Phase 4）: 最終議事録(Markdown)をクリップボードへコピー（依存なし）。
+const copyMinutes = async (): Promise<void> => {
+  const md = detail.value?.meeting.final_minutes ?? "";
+  if (!md) {
+    $q.notify({ message: "書き出せる議事録がありません", color: "orange-8", icon: "info" });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(md);
+    $q.notify({ message: "議事録をコピーしました", color: "indigo", icon: "content_copy", timeout: 2000 });
+  } catch {
+    $q.notify({ message: "コピーに失敗しました", color: "negative", icon: "error" });
+  }
+};
 </script>
 
 <template>
@@ -192,6 +209,18 @@ const speakerName = (e: { kind: string; speaker_id: number | null }): string =>
                 <q-icon name="description" class="q-mr-xs" />最終議事録
               </div>
               <q-space />
+              <q-btn
+                flat
+                dense
+                no-caps
+                size="sm"
+                icon="content_copy"
+                label="コピー"
+                color="primary"
+                class="q-mr-sm"
+                :disable="!detail.meeting.final_minutes"
+                @click="copyMinutes"
+              />
               <q-badge v-if="detail.meeting.batch_model" outline color="grey-7" :label="'batch: ' + detail.meeting.batch_model" />
             </q-card-section>
             <q-separator />

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-01 カレンダー（DD-012-9 操作強化モック）</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  .cal-cell{min-height:108px;border:1px solid #e5e7eb;position:relative;transition:background .12s,outline .12s;}
+  .cal-cell.dim{background:#fafafa;color:#bbb;}
+  .cal-cell.today{outline:2px solid var(--q-primary);outline-offset:-2px;}
+  .cal-cell.dragover{outline:2px dashed var(--q-secondary);outline-offset:-2px;background:#ecfeff;}
+  .cal-head{font-size:12px;color:#6b7280;}
+  .meet-chip{font-size:11px;cursor:grab;}
+  .meet-chip:active{cursor:grabbing;}
+  /* 空き枠の「＋」はセルにホバーした時だけ薄く出す */
+  .add-btn{opacity:0;transition:opacity .12s;}
+  .cal-cell:hover .add-btn{opacity:.55;}
+  .add-btn:hover{opacity:1;}
+  .chip-more{opacity:.85;}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh lpR fFf">
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.id" clickable :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <q-btn flat round dense icon="graphic_eq"></q-btn>
+        <q-toolbar-title>SynchroniNote</q-toolbar-title>
+        <q-btn flat dense no-caps icon="add" label="新規会議" @click="createAt({day:todayDay,inMonth:true})" class="q-mr-sm"></q-btn>
+        <q-btn flat round dense icon="settings"><q-tooltip>設定</q-tooltip></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <q-page-container>
+      <q-page class="q-pa-md" style="max-width:1100px;margin:0 auto">
+
+        <!-- DD-012-9 で増える操作の説明（レビュー用ガイド。実装時は削除/簡素化） -->
+        <q-banner dense rounded class="bg-indigo-1 text-indigo-10 q-mb-md">
+          <template v-slot:avatar><q-icon name="auto_fix_high" color="primary"></q-icon></template>
+          <span class="text-weight-medium">DD-012-9 で増える操作（このモックで確認）:</span>
+          <span class="q-ml-sm">① 予定/議事録を<b>クリック</b>するとメニュー（開く/編集/書き出し/<b>削除</b>）　② <b>ドラッグ</b>して別日へ移動　③ 空きセルの<b>＋</b>でその日に新規作成（削除は確認＋元に戻す）</span>
+        </q-banner>
+
+        <!-- 月ナビ -->
+        <div class="row items-center q-mb-md">
+          <div class="text-h5 q-mr-md">2026年 6月</div>
+          <q-btn flat round dense icon="chevron_left"></q-btn>
+          <q-btn flat round dense icon="chevron_right"></q-btn>
+          <q-btn outline no-caps dense label="今日" class="q-ml-sm"></q-btn>
+          <q-space></q-space>
+        </div>
+
+        <!-- 凡例 -->
+        <div class="row q-gutter-sm q-mb-sm items-center text-caption text-grey-7">
+          <q-badge color="blue-5" label="予約 scheduled"></q-badge>
+          <q-badge color="red-5" label="進行中 active"></q-badge>
+          <q-badge color="green-6" label="完了 completed"></q-badge>
+          <span class="q-ml-md">予定をクリック→メニュー（開く/編集/書き出し/削除）／ドラッグで移動</span>
+        </div>
+
+        <!-- カレンダー -->
+        <q-card flat bordered>
+          <div class="row text-center q-py-xs">
+            <div class="col cal-head" v-for="w in weekdays" :key="w">{{ w }}</div>
+          </div>
+          <div class="row" v-for="(week,wi) in weeks" :key="wi">
+            <div class="col cal-cell q-pa-xs"
+                 v-for="(d,di) in week" :key="di"
+                 :class="{dim:!d.inMonth, today:d.today, dragover:dragOverDay===d.day && d.inMonth}"
+                 @dragover.prevent="onDragOver(d)" @dragleave="onDragLeave(d)" @drop="onDrop(d)">
+              <!-- 日付行＋空き枠の＋ -->
+              <div class="row items-center no-wrap">
+                <div class="text-weight-medium">{{ d.day }}</div>
+                <q-badge v-if="d.today" color="primary" class="q-ml-xs">今日</q-badge>
+                <q-space></q-space>
+                <q-btn v-if="d.inMonth" flat dense round size="9px" icon="add" color="primary" class="add-btn" @click="createAt(d)">
+                  <q-tooltip>この日に会議を作成</q-tooltip>
+                </q-btn>
+              </div>
+              <!-- 予定/議事録チップ（チップ全体クリックでメニュー） -->
+              <q-chip v-for="m in d.meetings" :key="m.id" dense clickable
+                      draggable="true" @dragstart="onDragStart(m,$event)" @dragend="onDragEnd"
+                      class="meet-chip q-ma-none q-mt-xs full-width justify-start no-wrap"
+                      :color="statusColor(m.status)" text-color="white">
+                <q-icon :name="statusIcon(m.status)" size="14px" class="q-mr-xs"></q-icon>
+                <span class="ellipsis">{{ m.time }} {{ m.title }}</span>
+                <q-icon name="expand_more" size="14px" class="q-ml-auto"></q-icon>
+                <q-menu auto-close anchor="bottom left" self="top left">
+                  <q-list dense style="min-width:168px">
+                    <q-item-label header class="q-py-xs ellipsis" style="max-width:240px">{{ m.time }} {{ m.title }}</q-item-label>
+                    <q-item clickable @click="openItem(m)"><q-item-section avatar><q-icon name="open_in_new"></q-icon></q-item-section><q-item-section>開く</q-item-section></q-item>
+                    <q-item clickable @click="editItem(m)"><q-item-section avatar><q-icon name="edit"></q-icon></q-item-section><q-item-section>編集</q-item-section></q-item>
+                    <q-item v-if="m.status==='completed'" clickable @click="exportItem(m)"><q-item-section avatar><q-icon name="download"></q-icon></q-item-section><q-item-section>書き出し</q-item-section></q-item>
+                    <q-separator></q-separator>
+                    <q-item clickable @click="askDelete(m)" class="text-negative"><q-item-section avatar><q-icon name="delete" color="negative"></q-icon></q-item-section><q-item-section>削除</q-item-section></q-item>
+                  </q-list>
+                </q-menu>
+              </q-chip>
+            </div>
+          </div>
+        </q-card>
+
+        <q-banner dense rounded class="bg-grey-2 q-mt-md text-grey-8">
+          <template v-slot:avatar><q-icon name="info" color="primary"></q-icon></template>
+          静的モック（ダミーデータ）。操作は画面内で完結し、実DBには書き込みません。移動・削除は「元に戻す」で取り消せます。
+        </q-banner>
+      </q-page>
+    </q-page-container>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref, computed } = Vue
+const NAV=[{id:'S-01',name:'カレンダー',icon:'calendar_month'},{id:'S-02',name:'会議作成',icon:'event_note'},{id:'S-03',name:'議事録詳細',icon:'description'},{id:'S-04',name:'プリフライト',icon:'mic'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq'},{id:'S-06',name:'生成中',icon:'auto_awesome'},{id:'S-07',name:'プレビュー',icon:'fact_check'},{id:'S-08',name:'設定',icon:'settings'}]
+const app = createApp({
+  setup(){
+    const leftDrawer=ref(true), nav=NAV, active='S-01'
+    const weekdays = ['日','月','火','水','木','金','土']
+    const todayDay = 8, year=2026, month=5 // 0-indexed June（2026/6/8=月曜・JST）
+
+    // ダミー会議（id付き・day で配置）。状態: scheduled/active/completed
+    const meetings = ref([
+      {id:'m1', title:'要件レビュー', time:'10:00', status:'completed', day:3},
+      {id:'m2', title:'技術選定MTG', time:'14:00', status:'completed', day:9},
+      {id:'m3', title:'スプリント計画', time:'09:30', status:'completed', day:12},
+      {id:'m4', title:'1on1', time:'17:00', status:'completed', day:12},
+      {id:'m5', title:'定例会', time:'15:00', status:'active', day:8},
+      {id:'m6', title:'設計レビュー', time:'13:00', status:'scheduled', day:18},
+      {id:'m7', title:'四半期報告', time:'11:00', status:'scheduled', day:24},
+    ])
+
+    const lastDay = new Date(year, month+1, 0).getDate()
+    const startOffset = new Date(year, month, 1).getDay()
+    const prevDays = new Date(year, month, 0).getDate()
+    const mtgsOf = d => meetings.value.filter(m=>m.day===d).sort((a,b)=>a.time.localeCompare(b.time))
+
+    const buildMonth = () => {
+      const cells=[]
+      for(let i=0;i<startOffset;i++) cells.push({day:prevDays-startOffset+1+i, inMonth:false, meetings:[]})
+      for(let d=1; d<=lastDay; d++) cells.push({day:d, inMonth:true, today:d===todayDay, meetings:mtgsOf(d)})
+      while(cells.length%7!==0) cells.push({day:cells.length-(startOffset+lastDay)+1, inMonth:false, meetings:[]})
+      const weeks=[]; for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7)); return weeks
+    }
+    const weeks = computed(()=> buildMonth())
+
+    const statusColor = s => ({scheduled:'blue-5',active:'red-5',completed:'green-6'}[s]||'grey')
+    const statusIcon  = s => ({scheduled:'event',active:'fiber_manual_record',completed:'check'}[s]||'event')
+
+    // ---- ドラッグ&ドロップで移動 ----
+    const draggingId=ref(null), dragOverDay=ref(null)
+    const onDragStart = (m,ev)=>{ draggingId.value=m.id; if(ev&&ev.dataTransfer){ev.dataTransfer.effectAllowed='move'} }
+    const onDragEnd = ()=>{ draggingId.value=null; dragOverDay.value=null }
+    const onDragOver = cell=>{ if(cell.inMonth) dragOverDay.value=cell.day }
+    const onDragLeave = cell=>{ if(dragOverDay.value===cell.day) dragOverDay.value=null }
+    const onDrop = cell=>{
+      const id=draggingId.value; draggingId.value=null; dragOverDay.value=null
+      if(!id || !cell.inMonth) return
+      const m=meetings.value.find(x=>x.id===id); if(!m || m.day===cell.day) return
+      const from=m.day; m.day=cell.day
+      Quasar.Notify.create({message:`「${m.title}」を 6/${cell.day} へ移動しました`, color:'primary', icon:'event', timeout:2600,
+        actions:[{label:'元に戻す',color:'amber',handler:()=>{ m.day=from }}]})
+    }
+
+    // ---- 削除（確認＋元に戻す） ----
+    const askDelete = m=>{
+      Quasar.Dialog.create({ title:'削除の確認',
+        message:`「${m.title}」を削除します。よろしいですか？<br><span style="color:#9ca3af;font-size:12px">参加者・文字起こしも一緒に消えます</span>`,
+        html:true, persistent:true, cancel:{label:'キャンセル',flat:true,color:'grey-8'}, ok:{label:'削除',color:'negative',unelevated:true}
+      }).onOk(()=>doDelete(m))
+    }
+    const doDelete = m=>{
+      const idx=meetings.value.findIndex(x=>x.id===m.id); if(idx<0) return
+      const removed=meetings.value.splice(idx,1)[0]
+      Quasar.Notify.create({message:`「${removed.title}」を削除しました`, color:'grey-9', icon:'delete', timeout:6000,
+        actions:[{label:'元に戻す',color:'amber',handler:()=>{ meetings.value.splice(idx,0,removed) }}]})
+    }
+
+    // ---- メニュー操作（モックは Notify で挙動を表現） ----
+    const dest = s => s==='completed'?'S-03 議事録詳細':(s==='active'?'S-05 リアルタイム':'S-02 会議作成')
+    const openItem  = m=>Quasar.Notify.create({message:`（モック）「${m.title}」を開く → ${dest(m.status)}`, color:'primary', icon:'open_in_new', timeout:2000})
+    const editItem  = m=>Quasar.Notify.create({message:`（モック）「${m.title}」を編集（タイトル・日時・参加者を修正）`, color:'teal', icon:'edit', timeout:2200})
+    const exportItem= m=>Quasar.Notify.create({message:`（モック）「${m.title}」の議事録を Markdown で書き出し／コピー`, color:'indigo', icon:'download', timeout:2200})
+    const createAt  = cell=>{ if(cell&&cell.inMonth===false) return; const d=cell?cell.day:todayDay
+      Quasar.Notify.create({message:`（モック）6月${d}日 で新規会議を作成 → S-02`, color:'secondary', icon:'add', timeout:2000}) }
+
+    return { leftDrawer, nav, active, weekdays, weeks, todayDay,
+      statusColor, statusIcon, draggingId, dragOverDay,
+      onDragStart, onDragEnd, onDragOver, onDragLeave, onDrop,
+      askDelete, openItem, editItem, exportItem, createAt }
+  }
+})
+app.use(Quasar, { plugins: { Notify: Quasar.Notify, Dialog: Quasar.Dialog } })
+app.mount('#q-app')
+</script>
+</body>
+</html>

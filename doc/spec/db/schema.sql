@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
     stt_model         TEXT,
     live_model        TEXT,
     batch_model       TEXT,
-    use_llm_live      INTEGER NOT NULL DEFAULT 1 CHECK (use_llm_live IN (0,1)),
+    use_llm_live      INTEGER NOT NULL DEFAULT 0 CHECK (use_llm_live IN (0,1)),  -- 既定OFF: 非力環境配慮(DD-012-4)。会議中の追い上げ整形は任意
     kv_cache_type     TEXT CHECK (kv_cache_type IN ('f16','q8_0')),
     whisper_n_threads INTEGER,
     ollama_num_thread INTEGER,
@@ -125,7 +125,7 @@ INSERT OR IGNORE INTO app_settings
     (id, stt_model, live_model, batch_model, use_llm_live, kv_cache_type,
      whisper_n_threads, ollama_num_thread, keep_audio, updated_at)
 VALUES
-    (1, 'whisper base', 'qwen3:8b', 'gemma4:26b', 1, 'q8_0', 4, 4, 0, '1970-01-01T00:00:00');
+    (1, 'whisper base', 'qwen3:8b', 'gemma4:26b', 0, 'q8_0', 4, 4, 0, '1970-01-01T00:00:00');
 
 -- 版管理・マイグレーションは行わない（過去データ移行不要の前提）。
 -- スキーマ変更時は .sqlite を削除して本ファイルから再生成する。詳細: データベース設計.md §5 スキーマ適用方針

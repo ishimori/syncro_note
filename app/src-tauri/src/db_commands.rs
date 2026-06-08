@@ -83,6 +83,55 @@ pub fn create_meeting(
     Ok(())
 }
 
+/// 会議を1件削除する（S-01 削除 / DD-012-9）。子（参加者・タイムライン・添付・用語）は CASCADE で連動削除。
+#[tauri::command]
+pub fn delete_meeting(state: State<'_, DbState>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    map_err(db::delete_meeting(&conn, &id))
+}
+
+/// 予定日時のみ更新する（S-01 ドラッグ移動 / DD-012-9）。時刻維持・所要時間維持は frontend が確定して渡す。
+#[tauri::command]
+pub fn update_meeting_schedule(
+    state: State<'_, DbState>,
+    id: String,
+    scheduled_start: String,
+    scheduled_end: Option<String>,
+    updated_at: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    map_err(db::update_meeting_schedule(
+        &conn,
+        &id,
+        &scheduled_start,
+        scheduled_end.as_deref(),
+        &updated_at,
+    ))
+}
+
+/// 会議の編集（S-02 編集モード / DD-012-9）。会議行を更新し、`participants` が `Some` のときだけ
+/// 参加者を全入替する（`None`＝参加者に触れない＝完了会議で話者リンク
+/// `timeline_elements.confirmed_participant_id` を保全する）。会議行＋参加者は **1トランザクション**で
+/// 行う（`create_meeting` と同じく FK 順を守り、途中失敗で半端な行を残さない）。
+#[tauri::command]
+pub fn update_meeting(
+    state: State<'_, DbState>,
+    meeting: Meeting,
+    participants: Option<Vec<Participant>>,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    map_err(db::update_meeting(&tx, &meeting))?;
+    if let Some(ps) = &participants {
+        map_err(db::delete_participants(&tx, &meeting.id))?;
+        for p in ps {
+            map_err(db::insert_participant(&tx, p))?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 会議1件の詳細（本体＋参加者＋タイムライン）を返す（S-03 詳細）。無ければ null。
 #[tauri::command]
 pub fn get_meeting_detail(

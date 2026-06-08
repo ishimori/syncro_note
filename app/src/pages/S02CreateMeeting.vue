@@ -1,15 +1,25 @@
 <script setup lang="ts">
-// S-02 会議作成・事前登録 — DD-012-3 Phase 2: 作成→SQLite保存→カレンダー(S-01)へ。
+// S-02 会議作成・事前登録 — DD-012-3 で作成→保存、DD-012-9 Phase 4 で編集モードを追加。
 // 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-02_create-meeting.html。
 // ここで入力した前提（参加者・アジェンダ・用語・資料）が、リアルタイム補正と
 // 終了後の清書プロンプトに渡る。本フェーズでは基本情報＋参加者を `meetings`/`participants` に保存する。
 //   id・各時刻は frontend で確定して渡す（Rust DB層の純関数設計に合わせる）。
-import { ref, reactive } from "vue";
-import { useRouter } from "vue-router";
+// 編集モード（?id=）: 既存会議を読み込み、`update_meeting` で更新。完了会議は参加者を保護（話者リンク保全）。
+// 新規（?date=YYYY-MM-DD）: 空きセルからの遷移で日付を初期化する。
+import { ref, reactive, computed, onMounted } from "vue";
+import { useRouter, useRoute } from "vue-router";
 import AppNav from "../components/AppNav.vue";
-import { createMeeting, localIso, type Meeting, type Participant as DbParticipant } from "../api";
+import {
+  createMeeting,
+  updateMeeting,
+  getMeetingDetail,
+  localIso,
+  type Meeting,
+  type Participant as DbParticipant,
+} from "../api";
 
 const router = useRouter();
+const route = useRoute();
 
 interface Participant {
   name: string;
@@ -19,7 +29,7 @@ interface Participant {
 
 const leftDrawer = ref(true);
 
-// 基本情報
+// 基本情報（新規の初期値。編集モードでは onMounted で上書きする）
 const title = ref("設計レビュー");
 const date = ref("2026/06/18");
 const start = ref("13:00");
@@ -54,6 +64,44 @@ const vocab = ref<string[]>(["Qwen", "Tauri", "SQLite", "SynchroniNote"]);
 const saving = ref(false);
 const errorMsg = ref("");
 
+// 編集モード状態
+const editingBase = ref<Meeting | null>(null); // 読み込んだ会議（id/status/created_at/清書 等を温存）
+const isEditing = computed<boolean>(() => editingBase.value !== null);
+// 完了会議は参加者をロック（変更すると timeline_elements.confirmed_participant_id の話者リンクが切れるため）。
+const participantsLocked = computed<boolean>(() => editingBase.value?.status === "completed");
+
+// 起動時: ?id= があれば編集モードで読み込み、なければ ?date= で日付を初期化。
+onMounted(async () => {
+  const id = typeof route.query.id === "string" ? route.query.id : "";
+  if (id) {
+    try {
+      const detail = await getMeetingDetail(id);
+      if (!detail) {
+        errorMsg.value = "対象の会議が見つかりません（削除済みの可能性があります）";
+        return;
+      }
+      const m = detail.meeting;
+      editingBase.value = m;
+      title.value = m.title;
+      place.value = m.place ?? "";
+      agenda.value = m.agenda ?? "";
+      date.value = m.scheduled_start.slice(0, 10).replace(/-/g, "/");
+      start.value = m.scheduled_start.slice(11, 16);
+      end.value = m.scheduled_end ? m.scheduled_end.slice(11, 16) : "";
+      participants.splice(
+        0,
+        participants.length,
+        ...detail.participants.map((p) => ({ name: p.name, role: p.role ?? "", voice: p.voice_hint ?? "" })),
+      );
+    } catch (e) {
+      errorMsg.value = String(e);
+    }
+    return;
+  }
+  const d = typeof route.query.date === "string" ? route.query.date : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) date.value = d.replace(/-/g, "/");
+});
+
 // "2026/06/18" + "13:00" → ローカルISO "2026-06-18T13:00:00"（月フィルタが前方一致のため無TZ）。
 const toIso = (time: string): string | null => {
   const d = date.value.replace(/\//g, "-");
@@ -61,6 +109,17 @@ const toIso = (time: string): string | null => {
   const t = /^\d{2}:\d{2}$/.test(time) ? `${time}:00` : "00:00:00";
   return `${d}T${t}`;
 };
+
+// 入力 → DB参加者行（編集の全入替・新規の作成で共用）。
+const toDbParticipants = (meetingId: string): DbParticipant[] =>
+  participants.map((p, i) => ({
+    id: crypto.randomUUID(),
+    meeting_id: meetingId,
+    name: p.name,
+    role: p.role || null,
+    voice_hint: p.voice || null,
+    sort_order: i,
+  }));
 
 const save = async (): Promise<void> => {
   if (!title.value) {
@@ -76,33 +135,40 @@ const save = async (): Promise<void> => {
   errorMsg.value = "";
   try {
     const now = localIso();
-    const id = crypto.randomUUID();
-    const meeting: Meeting = {
-      id,
-      title: title.value,
-      agenda: agenda.value || null,
-      place: place.value || null,
-      scheduled_start: scheduledStart,
-      scheduled_end: toIso(end.value),
-      actual_start: null,
-      actual_end: null,
-      status: "scheduled",
-      final_minutes: null,
-      batch_model: null,
-      generation_seconds: null,
-      audio_path: null,
-      created_at: now,
-      updated_at: now,
-    };
-    const ps: DbParticipant[] = participants.map((p, i) => ({
-      id: crypto.randomUUID(),
-      meeting_id: id,
-      name: p.name,
-      role: p.role || null,
-      voice_hint: p.voice || null,
-      sort_order: i,
-    }));
-    await createMeeting(meeting, ps);
+    if (editingBase.value) {
+      // 編集: 会議行の編集項目だけ上書き（status・final_minutes・実績時刻・created_at は温存）。
+      const m: Meeting = {
+        ...editingBase.value,
+        title: title.value,
+        agenda: agenda.value || null,
+        place: place.value || null,
+        scheduled_start: scheduledStart,
+        scheduled_end: toIso(end.value),
+        updated_at: now,
+      };
+      // 完了会議は参加者を保護（undefined＝参加者に触れない）。予定は全入替。
+      await updateMeeting(m, participantsLocked.value ? undefined : toDbParticipants(m.id));
+    } else {
+      const id = crypto.randomUUID();
+      const meeting: Meeting = {
+        id,
+        title: title.value,
+        agenda: agenda.value || null,
+        place: place.value || null,
+        scheduled_start: scheduledStart,
+        scheduled_end: toIso(end.value),
+        actual_start: null,
+        actual_end: null,
+        status: "scheduled",
+        final_minutes: null,
+        batch_model: null,
+        generation_seconds: null,
+        audio_path: null,
+        created_at: now,
+        updated_at: now,
+      };
+      await createMeeting(meeting, toDbParticipants(id));
+    }
     router.push("/s01"); // 保存できたらカレンダーへ（当月なら即表示される）
   } catch (e) {
     errorMsg.value = String(e);
@@ -124,8 +190,8 @@ const save = async (): Promise<void> => {
           <q-tooltip>画面メニュー</q-tooltip>
         </q-btn>
         <q-btn flat round dense icon="arrow_back" @click="router.push('/s01')" />
-        <q-toolbar-title>会議の作成・事前登録</q-toolbar-title>
-        <q-badge color="blue-5" label="2026/06/18(木) 予約" />
+        <q-toolbar-title>{{ isEditing ? "会議の編集" : "会議の作成・事前登録" }}</q-toolbar-title>
+        <q-badge :color="isEditing ? 'teal' : 'blue-5'" :label="isEditing ? '編集' : '新規'" />
       </q-toolbar>
     </q-header>
 
@@ -181,6 +247,10 @@ const save = async (): Promise<void> => {
           </q-card-section>
           <q-separator />
           <q-card-section>
+            <q-banner v-if="participantsLocked" dense rounded class="bg-blue-1 text-blue-10 q-mb-sm">
+              <template v-slot:avatar><q-icon name="lock" color="blue-8" /></template>
+              完了した議事録では、文字起こしの話者ラベルを保つため参加者は変更できません。
+            </q-banner>
             <q-list bordered separator class="rounded-borders q-mb-sm">
               <q-item v-for="(p, i) in participants" :key="i">
                 <q-item-section avatar>
@@ -194,11 +264,19 @@ const save = async (): Promise<void> => {
                   <q-item-label caption>声の補足: {{ p.voice || "—" }}</q-item-label>
                 </q-item-section>
                 <q-item-section side>
-                  <q-btn flat round dense icon="close" color="grey-6" @click="removeParticipant(i)" />
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    icon="close"
+                    color="grey-6"
+                    :disable="participantsLocked"
+                    @click="removeParticipant(i)"
+                  />
                 </q-item-section>
               </q-item>
             </q-list>
-            <div class="row q-col-gutter-sm items-center">
+            <div v-if="!participantsLocked" class="row q-col-gutter-sm items-center">
               <q-input class="col" dense outlined v-model="np.name" label="氏名 *" />
               <q-input class="col" dense outlined v-model="np.role" label="役職" />
               <q-input class="col" dense outlined v-model="np.voice" label="声の補足（例:男性/低音）" />
@@ -275,11 +353,12 @@ const save = async (): Promise<void> => {
             no-caps
             color="primary"
             icon="save"
-            label="保存して予約"
+            :label="isEditing ? '変更を保存' : '保存して予約'"
             :loading="saving"
             @click="save"
           />
           <q-btn
+            v-if="editingBase?.status !== 'completed'"
             unelevated
             no-caps
             color="primary"
