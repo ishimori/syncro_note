@@ -283,6 +283,34 @@ def _run_level(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_extract(args: argparse.Namespace) -> int:
+    """事前資料（xlsx/pdf）の本文抽出を1行 emit する（DD-012-10）。
+
+    成功: ``{"type":"extract","status":"done","text":..,"chars":N,"truncated":..,"empty":..}``
+    失敗: ``{"type":"extract","status":"error","message":..,"where":"extract"}``
+    （破損/暗号化/未対応拡張子はここで error に倒す。会議作成自体は妨げない方針）。
+    """
+    from synchroni_note.pipeline.extract import extract_text
+
+    try:
+        r = extract_text(args.extract, file_type=args.type)
+        emit(
+            {
+                "type": "extract",
+                "status": "done",
+                "text": r.text,
+                "chars": r.chars,
+                "truncated": r.truncated,
+                "empty": r.empty,
+            }
+        )
+        return 0
+    except Exception as e:  # noqa: BLE001  破損/暗号化/未対応など全て error 行に倒す
+        emit({"type": "extract", "status": "error", "message": str(e), "where": "extract"})
+        print(f"[sidecar] extract {e!r}", file=sys.stderr, flush=True)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows の cp932 端末でも日本語を出力できるよう UTF-8 に再構成する（cli.py と同じ手当て）。
     if hasattr(sys.stdout, "reconfigure"):
@@ -309,9 +337,17 @@ def main(argv: list[str] | None = None) -> int:
         "--refine", action="store_true", help="確定セグメントをlive LLMで追い上げ整形(DD-012-4)"
     )
     parser.add_argument("--live-model", default="qwen3:8b", help="追い上げ整形のOllamaモデル")
+    parser.add_argument(
+        "--extract", type=Path, default=None, help="事前資料(xlsx/pdf)の本文抽出(DD-012-10)"
+    )
+    parser.add_argument(
+        "--type", choices=("xlsx", "pdf"), default=None, help="--extract の種別(省略時は拡張子推定)"
+    )
     args = parser.parse_args(argv)
 
     try:
+        if args.extract is not None:
+            return _run_extract(args)
         if args.level:
             return _run_level(args)
         if args.mic or args.simulate is not None:

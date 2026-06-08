@@ -32,19 +32,45 @@
 
 ## 決定事項
 
-（Phase 0 で確定。現時点の素案＝上記ライブラリ採用・サイドカー抽出・local_path コピー方式）
+- **抽出ライブラリ＝openpyxl（xlsx）＋ pymupdf/fitz（pdf）に確定**（Phase 0 実測で本文取得・速度・文字化けなし・オフライン動作を確認）。pdfplumber は不採用（pymupdf が高速＝7.5ms/枚で十分）。
+- 抽出は**独立モジュール `pipeline/extract.py`** に実装し、sidecar `--extract <path> [--type xlsx|pdf]` から呼ぶ（transcribe.py↔sidecar.py の分離パターン踏襲。pytest で単体検証）。
+- **本文上限トリム**＝定数 `EXTRACT_MAX_CHARS`（先頭優先＋末尾に省略注記）。清書プロンプト膨張（DA#2）対策。
+- **抽出ゼロ（画像PDF等）は `status='done'` かつ `empty=true`** で UI に注意表示（DA#1）。破損/暗号化は `status='error'`＋理由（DA#3）。
+- ファイル取り込み導線（D&D vs ダイアログ）は **Phase 3 で決定**（上記 §UI の `dragDropEnabled` 申し送りに従う）。
+
+### Phase 0 実測（スパイク）
+
+`c:/tmp/spike_extract.py` で自作サンプル（日本語＋絵文字）を抽出。`uv run`（PYTHONUTF8=1）:
+
+| 形式 | ライブラリ | 速度 | 文字化け | 異常系 |
+|------|-----------|------|---------|--------|
+| xlsx | openpyxl `load_workbook(read_only,data_only)` | 3.7ms | なし（日本語・絵文字✅・数値カンマ保持） | — |
+| pdf  | pymupdf `page.get_text()` | 7.5ms/枚 | なし | 壊れPDF→`FileDataError` 例外（→error に倒せる） |
+
+- **オフライン**: 両ライブラリとも抽出にネット不要（pymupdf 描画フォントもバンドル）。セキュリティ要件（外部送信なし）を満たす。
+
+### Phase 0 設計判断（実装前の I/F 確定）
+
+- **extract.py 公開関数**:
+  - `EXTRACT_MAX_CHARS: int`（上限定数）
+  - `extract_text(path: Path, file_type: str | None = None) -> ExtractResult` — `file_type` 省略時は拡張子から推定（`.xlsx`/`.pdf`）。`ExtractResult = {text:str, chars:int, truncated:bool, empty:bool}`。未対応拡張子/破損は `ValueError`/各ライブラリ例外を送出（呼び元が error に変換）。
+  - 内部: `_extract_xlsx(path) -> str`（シート見出し`# {title}`＋行をタブ連結）／`_extract_pdf(path) -> str`（全ページ `get_text` 連結）。
+- **sidecar 契約（extract モード, 1行=1JSON, `v:1`）**:
+  - `{"type":"extract","status":"done","text":"..","chars":N,"truncated":bool,"empty":bool}`（成功）
+  - `{"type":"extract","status":"error","message":"..","where":"extract"}`（失敗）
+- **Tauri 側（Phase 2）**: `add_attachment(meeting_id, src_path)` がファイルを `app_data_dir/.../attachments/` へコピー→`parse_status='pending'` 行作成→sidecar `--extract` 実行→`done/error`＋`extracted_text` 更新。
 
 ## タスク一覧
 
-### Phase 0: 事前精査
-- [ ] 📋 抽出ライブラリの実測（xlsx=openpyxl / pdf=pymupdf or pdfplumber）。サンプルで本文取得・速度・文字化けを確認
-- [ ] 📐 詳細化トリガー判定（新規テーブル配線・新規サイドカーモード・清書入力I/F変更 → **詳細化要**見込み）
-- [ ] 😈 Devil's Advocate（巨大ファイル/暗号化PDF/画像PDF/文字コード/個人情報の取り扱い）
+### Phase 0: 事前精査 ✅
+- [x] 📋 抽出ライブラリの実測（**openpyxl 3.1.5 / pymupdf 1.27**）→ スパイクで本文取得・速度・文字化けを確認（下記「Phase 0 実測」）。**両者とも純オフライン**で要件充足。**採用＝openpyxl＋pymupdf に確定**
+- [x] 📐 詳細化トリガー判定 → **詳細化要**（新規テーブル配線＋新規サイドカーモード＋清書入力I/F変更）。実装前に下記「Phase 0 設計判断」に I/F を明記してから着手
+- [x] 😈 Devil's Advocate（巨大ファイル/暗号化PDF/画像PDF/文字コード）→ 下記 Phase 0 DA（着手前先出し済み）。実測で #5 を追記
 
-### Phase 1: 抽出パイプライン（Python サイドカー）
-- [ ] `python/.../sidecar.py` に `--extract <path> --type <xlsx|pdf>`。`{"type":"extract","status":"done|error","text":...}` を emit
-- [ ] 🔬 機械検証: サンプル xlsx/pdf で本文抽出（行数/文字数）・error 経路（壊れたファイル）。ruff
-- [ ] 😈 DA批判レビュー
+### Phase 1: 抽出パイプライン（Python サイドカー）✅
+- [x] 抽出ロジックを独立モジュール [extract.py](../../python/src/synchroni_note/pipeline/extract.py) に実装（`extract_text()`／`ExtractResult{text,chars,truncated,empty}`／`EXTRACT_MAX_CHARS` トリム）。[sidecar.py](../../python/src/synchroni_note/pipeline/sidecar.py) に `--extract <path> [--type xlsx|pdf]` を追加し `{"type":"extract","status":"done|error",...}` を emit
+- [x] 🔬 機械検証: [test_extract.py](../../python/tests/test_extract.py) 10件パス（xlsx日本語/見出し・pdfテキストレイヤ・拡張子推定・未対応→ValueError・空PDF→empty・上限トリム・破損→例外・sidecar done/error契約・ネットライブラリ非混入）。ruff クリーン。既存 sidecar/smoke テストも無傷
+- [x] 😈 DA批判レビュー → Phase 0 DA #1/#2/#3/#5 を実装で担保（空=empty表示／上限トリム／破損=error／data_only維持）。下記 Phase 1 DA 追記なし（先出しで尽くした）
 
 ### Phase 2: BE（attachments の Tauri command＋db.rs）
 - [ ] `db.rs`: `insert_attachment` / `list_attachments` / `update_attachment_parse`（status＋extracted_text）/ `delete_attachment`
@@ -73,6 +99,8 @@
 
 ### 2026-06-08
 - 起票（親 DD-012 の子）。ユーザー提案「事前にExcel/PDFを添付→テキスト抽出」を、設計済み未実装の `attachments` 実装として正式化。DD-012-9（S-01操作強化）から分離（性質が解析パイプラインで別物のため）。抽出は完全オフライン（openpyxl / pymupdf 等）。画像PDFのOCR・docx/pptx は対象外（将来）。
+- **Phase 0 完了**: スパイクで openpyxl/pymupdf を実測（xlsx 3.7ms・pdf 7.5ms/枚、日本語・絵文字とも文字化けなし、破損PDFは例外で error 化可、両者オフライン）。**ライブラリ＝openpyxl＋pymupdf に確定**。📐詳細化＝要（上記「Phase 0 設計判断」に extract.py 公開I/F＋sidecar 契約を明記）。DA に実測由来 #5（openpyxl data_only の数式キャッシュ制約）を追記。`python` に `openpyxl`/`pymupdf` を依存追加（pyproject/uv.lock）。
+- **Phase 1 完了**: `extract.py`（純粋な抽出口）＋ sidecar `--extract` モードを実装。pytest 10件パス・ruff クリーン。**テスト時の知見**: pymupdf 既定フォントは CJK 非対応で日本語PDF生成は点字化する→PDFサンプルは ASCII、日本語通過確認は xlsx で担保（実ユーザーのフォント埋め込みPDFは抽出可）。`insert_text` はページ外をクリップ→上限トリム検証は xlsx の長文セルで実施。次＝Phase 2（attachments の Tauri/db 配線）。
 
 ---
 
@@ -90,3 +118,4 @@
 | 2 | **巨大本文で清書プロンプトが膨張**しモデル文脈を圧迫 | 中 | 大きなExcelを添付→清書 | 文脈/性能 | 保存時・清書前に文字数上限でトリム（先頭優先＋注記）。上限は定数化 |
 | 3 | **暗号化/破損ファイル**で抽出例外 | 中 | パスワード付きPDF | 異常系 | `parse_status='error'` に倒し UI へ理由表示。会議作成自体は妨げない |
 | 4 | **オフライン厳守**: ライブラリが外部フォントやネットを引かないこと | 高 | ネット遮断で抽出実行 | セキュリティ | ネット遮断環境で抽出が完結することを Phase 1 で検証（外部送信なしの担保） |
+| 5 | **openpyxl `data_only=True` は「Excelが最後に保存した計算値」を読む**。openpyxl 等で生成・未計算の数式セルは `None`（=抽出欠落）。実ユーザーが Excel で保存したファイルは計算値キャッシュがあり値が入る（Phase 0 実測で確認した制約） | 低 | プログラム生成で未計算の数式xlsxを添付 | 抽出品質 | 実運用は「ユーザーがExcelで保存した実ファイル」なので実害低。テストのサンプルは Excel 保存相当（または数式を避ける）で固定。`data_only=True` は維持（数式文字列より値が清書に有用） |
