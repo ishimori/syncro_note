@@ -8,7 +8,14 @@ import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useQuasar } from "quasar";
 import AppNav from "../components/AppNav.vue";
-import { listMeetings, getMeetingDetail, type MeetingDetail, type Meeting } from "../api";
+import {
+  listMeetings,
+  getMeetingDetail,
+  listAttachments,
+  type MeetingDetail,
+  type Meeting,
+  type Attachment,
+} from "../api";
 
 const router = useRouter();
 const route = useRoute();
@@ -17,6 +24,7 @@ const $q = useQuasar();
 const leftDrawer = ref(true);
 const completed = ref<Meeting[]>([]); // 過去の議事録一覧（completed）
 const detail = ref<MeetingDetail | null>(null);
+const attachments = ref<Attachment[]>([]); // 事前資料（DD-012-10）
 const selectedId = ref<string>("");
 const loading = ref(false);
 const errorMsg = ref("");
@@ -43,9 +51,11 @@ const loadDetail = async (id: string): Promise<void> => {
   try {
     detail.value = await getMeetingDetail(id);
     selectedId.value = id;
+    attachments.value = detail.value ? await listAttachments(id) : [];
   } catch (e) {
     errorMsg.value = String(e);
     detail.value = null;
+    attachments.value = [];
   } finally {
     loading.value = false;
   }
@@ -117,6 +127,10 @@ const participantsLabel = computed<string[]>(() =>
 
 const speakerName = (e: { kind: string; speaker_id: number | null }): string =>
   e.kind === "human_memo" ? "📝人間メモ" : `話者 ${e.speaker_id ?? "?"}`;
+
+// 添付の表示ヘルパ（DD-012-10）。
+const attachIcon = (type: string): string => (type === "xlsx" ? "grid_on" : "picture_as_pdf");
+const attachIconColor = (type: string): string => (type === "xlsx" ? "green-7" : "red-7");
 
 // 書き出し（DD-012-9 Phase 4）: 最終議事録(Markdown)をクリップボードへコピー（依存なし）。
 const copyMinutes = async (): Promise<void> => {
@@ -202,6 +216,41 @@ const copyMinutes = async (): Promise<void> => {
             </q-card-section>
           </q-card>
 
+          <!-- 事前資料（DD-012-10）: 抽出済みは本文プレビュー可 -->
+          <q-card v-if="attachments.length" flat bordered class="q-mb-md">
+            <q-card-section>
+              <div class="text-subtitle1 text-weight-medium">
+                <q-icon name="attach_file" class="q-mr-xs" />事前資料
+              </div>
+            </q-card-section>
+            <q-separator />
+            <q-list separator>
+              <q-expansion-item
+                v-for="a in attachments"
+                :key="a.id"
+                :disable="a.parse_status !== 'done' || !a.extracted_text"
+                expand-separator
+              >
+                <template v-slot:header>
+                  <q-item-section avatar>
+                    <q-icon :name="attachIcon(a.file_type)" :color="attachIconColor(a.file_type)" />
+                  </q-item-section>
+                  <q-item-section>
+                    <q-item-label>{{ a.file_name }}</q-item-label>
+                  </q-item-section>
+                  <q-item-section side>
+                    <q-badge v-if="a.parse_status === 'done' && a.extracted_text" color="green-6" label="抽出済み" />
+                    <q-badge v-else-if="a.parse_status === 'error'" color="red-6" label="失敗" />
+                    <q-badge v-else color="grey-5" label="本文なし" />
+                  </q-item-section>
+                </template>
+                <q-card-section class="bg-grey-1">
+                  <pre class="extract-preview">{{ a.extracted_text }}</pre>
+                </q-card-section>
+              </q-expansion-item>
+            </q-list>
+          </q-card>
+
           <!-- 最終議事録 -->
           <q-card flat bordered class="q-mb-md">
             <q-card-section class="row items-center">
@@ -284,5 +333,14 @@ const copyMinutes = async (): Promise<void> => {
 }
 .md p {
   margin: 0.4em 0;
+}
+.extract-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  font-size: 0.85rem;
+  color: #334155;
 }
 </style>

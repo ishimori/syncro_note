@@ -9,14 +9,19 @@
 import { ref, reactive, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useQuasar } from "quasar";
+import { open } from "@tauri-apps/plugin-dialog";
 import AppNav from "../components/AppNav.vue";
 import {
   createMeeting,
   updateMeeting,
   getMeetingDetail,
+  addAttachment,
+  listAttachments,
+  removeAttachment,
   localIso,
   type Meeting,
   type Participant as DbParticipant,
+  type Attachment,
 } from "../api";
 
 const router = useRouter();
@@ -62,6 +67,79 @@ const removeParticipant = (i: number): void => {
 // 専門用語辞書
 const vocab = ref<string[]>(["Qwen", "Tauri", "SQLite", "SynchroniNote"]);
 
+// 参考資料（DD-012-10）
+// 添付は meeting_id 必須（FK）。新規作成時はまだ会議が無いので「保存待ち列」に貯め、保存時に取り込む。
+// 編集モードは会議が存在するので即時に取り込む（コピー＋オフライン抽出）。
+const newMeetingId = crypto.randomUUID(); // 新規用に1度だけ採番（保存時もこのidで作る）
+const meetingId = computed<string>(() => editingBase.value?.id ?? newMeetingId);
+const savedAttachments = ref<Attachment[]>([]); // 取り込み済み（編集ロード or 即時追加の結果）
+interface PendingFile {
+  localId: string;
+  path: string;
+  name: string;
+  type: "xlsx" | "pdf";
+}
+const pendingFiles = ref<PendingFile[]>([]); // 新規作成での保存待ち
+const attaching = ref(false); // ダイアログ選択〜抽出中
+
+const fileTypeOf = (name: string): "xlsx" | "pdf" | null => {
+  const l = name.toLowerCase();
+  if (l.endsWith(".xlsx")) return "xlsx";
+  if (l.endsWith(".pdf")) return "pdf";
+  return null;
+};
+
+// 「資料を追加」: OSのファイル選択（実パスを得るため。webViewの input[type=file] は実パスを返さない）。
+const pickFiles = async (): Promise<void> => {
+  const selected = await open({
+    multiple: true,
+    filters: [{ name: "資料 (Excel / PDF)", extensions: ["xlsx", "pdf"] }],
+  });
+  if (selected === null) return;
+  const paths = Array.isArray(selected) ? selected : [selected];
+  for (const path of paths) {
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const type = fileTypeOf(name);
+    if (!type) {
+      $q.notify({ message: `未対応のファイルです: ${name}`, color: "warning", icon: "block" });
+      continue;
+    }
+    if (isEditing.value) {
+      // 既存会議 → 即時にコピー＋抽出（数秒）。結果（done/error）を一覧へ。
+      attaching.value = true;
+      try {
+        const a = await addAttachment(crypto.randomUUID(), meetingId.value, path, name, type, localIso());
+        savedAttachments.value.push(a);
+      } catch (e) {
+        errorMsg.value = String(e);
+      } finally {
+        attaching.value = false;
+      }
+    } else {
+      // 新規 → 保存待ち列へ（保存時にまとめて取り込む）。
+      pendingFiles.value.push({ localId: crypto.randomUUID(), path, name, type });
+    }
+  }
+};
+
+const removeSaved = async (id: string): Promise<void> => {
+  try {
+    await removeAttachment(id);
+    savedAttachments.value = savedAttachments.value.filter((a) => a.id !== id);
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+};
+const removePending = (localId: string): void => {
+  pendingFiles.value = pendingFiles.value.filter((f) => f.localId !== localId);
+};
+
+// 添付の表示用ヘルパ（種別アイコン・状態ラベル）。
+const attachIcon = (type: string): string => (type === "xlsx" ? "grid_on" : "picture_as_pdf");
+const attachIconColor = (type: string): string => (type === "xlsx" ? "green-7" : "red-7");
+const isEmptyExtract = (a: Attachment): boolean =>
+  a.parse_status === "done" && !(a.extracted_text && a.extracted_text.trim());
+
 // 保存処理
 const saving = ref(false);
 const errorMsg = ref("");
@@ -95,6 +173,7 @@ onMounted(async () => {
         participants.length,
         ...detail.participants.map((p) => ({ name: p.name, role: p.role ?? "", voice: p.voice_hint ?? "" })),
       );
+      savedAttachments.value = await listAttachments(id); // 既存の添付を表示（DD-012-10）
     } catch (e) {
       errorMsg.value = String(e);
     }
@@ -152,7 +231,7 @@ const save = async (): Promise<void> => {
       // 完了会議は参加者を保護（undefined＝参加者に触れない）。予定は全入替。
       await updateMeeting(m, participantsLocked.value ? undefined : toDbParticipants(m.id));
     } else {
-      const id = crypto.randomUUID();
+      const id = meetingId.value; // 新規用に採番済みのid（添付の保存待ち列と一致させる）
       const meeting: Meeting = {
         id,
         title: title.value,
@@ -171,6 +250,14 @@ const save = async (): Promise<void> => {
         updated_at: now,
       };
       await createMeeting(meeting, toDbParticipants(id));
+      // 会議が出来てから保存待ちの資料を取り込む（コピー＋オフライン抽出）。失敗は通知のみで保存は妨げない。
+      for (const f of pendingFiles.value) {
+        try {
+          await addAttachment(crypto.randomUUID(), id, f.path, f.name, f.type, localIso());
+        } catch (e) {
+          $q.notify({ message: `資料「${f.name}」の取り込みに失敗`, caption: String(e), color: "warning" });
+        }
+      }
     }
     // 「どの予定を・いつ」が分かるよう、タイトル＋日付＋時刻を添えて通知する。
     const when = `${date.value} ${start.value}${end.value ? "–" + end.value : ""}`;
@@ -319,35 +406,70 @@ const save = async (): Promise<void> => {
           </q-card-section>
         </q-card>
 
-        <!-- 資料 -->
+        <!-- 資料（DD-012-10: Excel/PDF をオフライン抽出して清書の前提資料にする） -->
         <q-card flat bordered class="q-mb-md">
-          <q-card-section>
-            <div class="text-subtitle1 text-weight-medium">
+          <q-card-section class="row items-center">
+            <div class="text-subtitle1 text-weight-medium col">
               <q-icon name="attach_file" class="q-mr-xs" />参考資料（.xlsx / .pdf）
             </div>
+            <q-btn
+              outline
+              no-caps
+              dense
+              color="primary"
+              icon="add"
+              label="資料を追加"
+              :loading="attaching"
+              @click="pickFiles"
+            />
           </q-card-section>
           <q-separator />
           <q-card-section>
-            <div class="dropzone q-pa-lg text-center text-grey-6 q-mb-sm">
-              <q-icon name="cloud_upload" size="36px" />
-              <div>ここにファイルをドラッグ＆ドロップ</div>
+            <div
+              v-if="savedAttachments.length === 0 && pendingFiles.length === 0"
+              class="text-grey-6 text-center q-py-md"
+            >
+              <q-icon name="upload_file" size="28px" class="q-mb-xs" />
+              <div>「資料を追加」で Excel/PDF を選ぶと、本文を取り出して清書に活かします（完全オフライン）。</div>
             </div>
-            <q-list bordered separator class="rounded-borders">
-              <q-item>
-                <q-item-section avatar><q-icon name="grid_on" color="green-7" /></q-item-section>
-                <q-item-section>
-                  <q-item-label>FY26_予算案.xlsx</q-item-label>
-                  <q-item-label caption>解析完了（extracted_text にキャッシュ）</q-item-label>
+            <q-list v-else bordered separator class="rounded-borders">
+              <!-- 取り込み済み（保存済み・編集ロード分） -->
+              <q-item v-for="a in savedAttachments" :key="a.id">
+                <q-item-section avatar>
+                  <q-icon :name="attachIcon(a.file_type)" :color="attachIconColor(a.file_type)" />
                 </q-item-section>
-                <q-item-section side><q-badge color="green-6" label="完了" /></q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ a.file_name }}</q-item-label>
+                  <q-item-label caption>
+                    <span v-if="a.parse_status === 'pending'">解析中…</span>
+                    <span v-else-if="a.parse_status === 'error'" class="text-negative">抽出に失敗しました</span>
+                    <span v-else-if="isEmptyExtract(a)" class="text-orange-9">
+                      テキストを取得できません（画像PDFの可能性）
+                    </span>
+                    <span v-else>解析完了（清書に反映されます）</span>
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side class="row items-center no-wrap">
+                  <q-spinner v-if="a.parse_status === 'pending'" color="primary" size="18px" class="q-mr-sm" />
+                  <q-badge v-else-if="a.parse_status === 'error'" color="red-6" label="失敗" class="q-mr-sm" />
+                  <q-badge v-else-if="isEmptyExtract(a)" color="orange-7" label="本文なし" class="q-mr-sm" />
+                  <q-badge v-else color="green-6" label="完了" class="q-mr-sm" />
+                  <q-btn flat round dense icon="close" color="grey-6" @click="removeSaved(a.id)" />
+                </q-item-section>
               </q-item>
-              <q-item>
-                <q-item-section avatar><q-icon name="picture_as_pdf" color="red-7" /></q-item-section>
-                <q-item-section>
-                  <q-item-label>製品仕様_v3.pdf</q-item-label>
-                  <q-item-label caption>テキスト抽出中…</q-item-label>
+              <!-- 保存待ち（新規作成。保存時に取り込む） -->
+              <q-item v-for="f in pendingFiles" :key="f.localId">
+                <q-item-section avatar>
+                  <q-icon :name="attachIcon(f.type)" :color="attachIconColor(f.type)" />
                 </q-item-section>
-                <q-item-section side><q-spinner color="primary" size="18px" /></q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ f.name }}</q-item-label>
+                  <q-item-label caption>保存時に取り込みます</q-item-label>
+                </q-item-section>
+                <q-item-section side class="row items-center no-wrap">
+                  <q-badge color="grey-5" label="保存待ち" class="q-mr-sm" />
+                  <q-btn flat round dense icon="close" color="grey-6" @click="removePending(f.localId)" />
+                </q-item-section>
               </q-item>
             </q-list>
           </q-card-section>
@@ -384,9 +506,3 @@ const save = async (): Promise<void> => {
   </q-layout>
 </template>
 
-<style scoped>
-.dropzone {
-  border: 2px dashed #cbd5e1;
-  border-radius: 8px;
-}
-</style>

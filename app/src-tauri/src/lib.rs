@@ -485,6 +485,7 @@ fn kill_sidecar(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init()) // 事前資料の選択ダイアログ（DD-012-10）
         .manage(SttState(Mutex::new(None)))
         .setup(|app| {
             // DB を開いて DbState を manage（DD-012-3 Phase 2）。失敗時は起動を止める。

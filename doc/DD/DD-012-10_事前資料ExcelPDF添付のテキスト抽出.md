@@ -78,11 +78,12 @@
 - [x] 🔬 機械検証: `cargo test --lib` 21件パス（添付 CRUD＋parse更新＋会議削除 CASCADE＋CHECK/FK 拒否の3件追加）。実CLI `uv run … sidecar --extract <xlsx/pdf>` が結果JSON 1行を emit することを実機確認（Rust が呼ぶ経路と同一）
 - [x] 😈 DA批判レビュー → 下記 Phase 2 DA
 
-### Phase 3: FE（S-02 取り込み／S-03 表示）
-- [ ] [S02CreateMeeting.vue](../../app/src/pages/S02CreateMeeting.vue): 資料D&D/選択・一覧・`parse_status` 表示・削除
-- [ ] [S03MinutesDetail.vue](../../app/src/pages/S03MinutesDetail.vue): 添付チップ表示（抽出本文プレビュー）
-- [ ] 🔬 機械検証: vue-tsc。実ウィンドウで添付→解析中→done 表示
-- [ ] 😈 DA批判レビュー
+### Phase 3: FE（S-02 取り込み／S-03 表示）✅（実装/型チェック）・実機E2EはPhase 5へ
+- [x] **取り込み方式＝ファイル選択ダイアログに決定**（ユーザー合意）。`tauri-plugin-dialog` 導入（Rust/JS＋`lib.rs` 登録＋`capabilities/default.json` に `dialog:default`）。D&D不採用＝DD-012-9 の `dragDropEnabled:false`（カレンダーDnD）と競合するため
+- [x] [S02CreateMeeting.vue](../../app/src/pages/S02CreateMeeting.vue): モックの資料カードを実データ化。「資料を追加」ボタン→`open()` で実パス取得→**2モード**（新規=保存待ち列に貯め保存時に取り込み／編集=即時 `addAttachment`）。一覧に `parse_status`（解析中/完了/失敗/本文なし）表示・削除。FK制約（添付は会議存在が前提）を2モードで吸収
+- [x] [S03MinutesDetail.vue](../../app/src/pages/S03MinutesDetail.vue): 「事前資料」カード追加。`q-expansion-item` で抽出本文プレビュー（done のみ展開可）・状態バッジ
+- [x] 🔬 機械検証: `vue-tsc --noEmit` パス・`cargo build` パス・Playwright で S-02 の資料カード描画を確認（空状態の案内文＋「資料を追加」）。**実ウィンドウでの 添付→解析中→done と本文プレビューは Tauri ランタイム専用 → Phase 5（実機E2E）へ**
+- [x] 😈 DA批判レビュー → 下記 Phase 3 DA
 
 ### Phase 4: 清書統合
 - [ ] 清書バッチの入力に `extracted_text`(done) を前提資料として連結（[基本設計書.md](../../doc/spec/基本設計書.md) の入力統合に沿う）
@@ -131,3 +132,15 @@
 | 7 | **コピー成功後に抽出失敗でゴミファイルが残らないか** | 中 | 壊れPDFを添付 | データ保全 | 仕様: コピー失敗は行作成前に早期return（ゴミ行なし）。抽出失敗は `error` 行＋ファイル残置（再抽出の余地）で許容。行は `remove_attachment` でファイルごと消せる |
 | 8 | **会議ごと削除時、コピーした実ファイルがディスクに残る**（DB行は CASCADE で消えるがファイルは消えない） | 中 | 添付つき会議を S-01 で削除 | 後始末 | **既知の制約として許容**（オフライン端末内・容量影響小）。`remove_attachment`（個別削除）はファイルも消す。会議削除時の添付ファイル一括掃除は将来（別DD or Phase 追補） |
 | 9 | **同期ブロックの体感**: add は uv 起動込みで数秒 await | 低 | 大きめPDFを添付 | UX | 頻度の低い会議前準備操作なので同期で十分。UI は Phase 3 で `pending` スピナー表示して吸収 |
+
+### Phase 3 DA（実装後）
+
+**DA観点:** （新規のFK制約／実パス取得／状態の取りこぼし）
+
+| # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
+|---|-------------------|--------|----------------------|--------|------|
+| 10 | **新規会議は meeting 行が無く、添付の FK が張れない**。作成前に `add_attachment` すると失敗 | 高 | 新規作成画面で資料追加→保存前 | データ整合 | 新規は**保存待ち列**に貯め、`create_meeting` 成功**後**に採番済み id で取り込む。id は `meetingId`（新規は一度だけ採番）で作成と一致させる。編集は会議が在るので即時 |
+| 11 | **webView の `input[type=file]` は実パスを返さない**（Tauri セキュリティ）。コピー元パスが取れない | 高 | D&D/HTML input で添付 | 実装制約 | `tauri-plugin-dialog` の `open()` で**絶対パス**を取得し `add_attachment(src_path)` に渡す（BE のコピー設計と一致） |
+| 12 | **抽出ゼロ(画像PDF)が「完了」に見える** | 中 | 画像PDFを添付 | 抽出品質 | `done` かつ `extracted_text` 空を `isEmptyExtract` で判定し「本文なし（画像PDFの可能性）」をオレンジ表示（S-02）。S-03 は本文プレビューを無効化＋「本文なし」バッジ |
+| 13 | **保存前に追加→キャンセルでゴミが残らないか** | 低 | 新規で資料追加→キャンセル | データ保全 | 新規はコピー/抽出を保存時まで遅延＝キャンセルなら何も書かない（ゴミ行/ファイルなし）。保存待ちは×で個別取消可 |
+| 14 | **実機E2E（ダイアログ→抽出→表示）は Tauri 専用** | 中 | 実ウィンドウで添付 | 検証境界 | Playwright は描画のみ確認。添付の一周は **Phase 5（実機E2E）** でユーザー実機確認 |

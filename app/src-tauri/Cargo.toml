@@ -24,4 +24,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # SQLite はRust(Tauri)が単独所有（DD-012-3 Phase 0 設計判断）。bundled で sqlite3 を同梱しビルド再現性を担保。
 rusqlite = { version = "0.32", features = ["bundled"] }
+tauri-plugin-dialog = "2.7.1"
 
