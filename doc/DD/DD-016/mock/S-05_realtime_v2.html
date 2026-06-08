@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SynchroniNote — S-05 リアルタイム議事録 v2（DD-016 モック）</title>
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/material-icons/material-icons.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/@quasar/extras/roboto-font/roboto-font.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.prod.css" rel="stylesheet" type="text/css">
+<style>
+  :root{--q-primary:#4f46e5;--q-secondary:#0ea5a4;}
+  html,body{height:100%;overflow:hidden;}             /* ページ全体スクロールを止める（要件3） */
+  .rec-dot{width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;animation:blink 1s infinite;}
+  @keyframes blink{50%{opacity:.3}}
+  .refined{color:#64748b;font-size:.85em;border-left:2px solid #cbd5e1;padding-left:8px;margin-top:2px;}
+  .spk{cursor:pointer;border-bottom:1px dashed #94a3b8;}
+  .seg{border-bottom:1px solid #f1f5f9;padding:8px 0;}
+  /* 会話記録エリアだけを独立スクロール（要件2） */
+  .timeline-scroll{overflow-y:auto;min-height:0;}
+  /* Quasar の .row/.column は flex-wrap:wrap を含み縦の高さ配分が壊れるため、nowrap の専用クラスを使う */
+  .fill-col{display:flex;flex-direction:column;flex-wrap:nowrap;min-height:0;}
+  .fill-row{display:flex;flex-direction:row;flex-wrap:nowrap;min-height:0;}
+</style>
+</head>
+<body>
+<div id="q-app">
+  <q-layout view="hHh LpR fFf">
+    <!-- 左ドロワー: 画面ナビ -->
+    <q-drawer side="left" v-model="leftDrawer" show-if-above bordered :width="230" class="bg-grey-1">
+      <q-toolbar class="bg-primary text-white"><q-avatar icon="graphic_eq" size="28px"></q-avatar><q-toolbar-title class="text-subtitle1">SynchroniNote</q-toolbar-title></q-toolbar>
+      <q-list padding>
+        <q-item v-for="n in nav" :key="n.id" clickable :active="n.id===active" active-class="bg-indigo-1 text-primary text-weight-bold">
+          <q-item-section avatar><q-icon :name="n.icon"></q-icon></q-item-section>
+          <q-item-section><q-item-label>{{ n.id }}</q-item-label><q-item-label caption>{{ n.name }}</q-item-label></q-item-section>
+        </q-item>
+      </q-list>
+    </q-drawer>
+
+    <!-- ヘッダ: 録音状態・経過・遅延・終了（スクロールしても固定＝要件3） -->
+    <q-header elevated class="bg-primary text-white">
+      <q-toolbar>
+        <q-btn flat round dense icon="menu" @click="leftDrawer=!leftDrawer" class="q-mr-xs"><q-tooltip>画面メニュー</q-tooltip></q-btn>
+        <span class="rec-dot q-mr-sm"></span>
+        <q-toolbar-title>リアルタイム議事録</q-toolbar-title>
+        <q-chip dense color="white" text-color="primary" icon="schedule" :label="elapsed" class="q-mr-sm"></q-chip>
+        <q-chip dense color="green-4" text-color="white" icon="speed" :label="'遅延 '+latency+'s'" class="q-mr-sm"></q-chip>
+        <q-chip dense color="grey-4" text-color="dark" icon="warning" :label="'drop '+drops"></q-chip>
+        <q-btn unelevated no-caps color="red-6" icon="stop" label="会議を終了" class="q-ml-md"></q-btn>
+      </q-toolbar>
+    </q-header>
+
+    <!-- 右ドロワー: コンテキスト（録音中に編集できる＝要件1） -->
+    <q-drawer side="right" v-model="drawer" show-if-above bordered :width="300">
+      <q-scroll-area class="fit">
+        <q-list padding>
+          <!-- アジェンダ: その場でテキスト編集 -->
+          <q-item-label header class="row items-center">
+            アジェンダ <q-space></q-space>
+            <q-icon name="edit" size="16px" color="grey-6"><q-tooltip>録音中も編集できます</q-tooltip></q-icon>
+          </q-item-label>
+          <q-item>
+            <q-item-section>
+              <q-input v-model="agenda" type="textarea" outlined dense autogrow
+                placeholder="例）1. 前回宿題の確認 / 2. 仕様レビュー / 3. 次アクション" />
+            </q-item-section>
+          </q-item>
+          <q-separator spaced></q-separator>
+
+          <!-- 参加者: 追加・削除。ここに入れた人は話者確定プルダウンに出る -->
+          <q-item-label header>参加者</q-item-label>
+          <q-item v-if="participants.length===0"><q-item-section class="text-grey-6">（登録なし）</q-item-section></q-item>
+          <q-item v-for="(p,i) in participants" :key="i">
+            <q-item-section avatar><q-avatar size="28px" color="secondary" text-color="white">{{(p.name||'？').charAt(0)}}</q-avatar></q-item-section>
+            <q-item-section>
+              <q-item-label>{{ p.name }}</q-item-label>
+              <q-item-label caption v-if="p.role">{{ p.role }}</q-item-label>
+            </q-item-section>
+            <q-item-section side><q-btn flat round dense size="sm" icon="close" color="grey-6" @click="removeP(i)"><q-tooltip>削除</q-tooltip></q-btn></q-item-section>
+          </q-item>
+          <q-item>
+            <q-item-section>
+              <div class="row q-col-gutter-xs items-center">
+                <div class="col-6"><q-input v-model="newName" outlined dense placeholder="名前" @keyup.enter="addP" /></div>
+                <div class="col"><q-input v-model="newRole" outlined dense placeholder="役職(任意)" @keyup.enter="addP" /></div>
+                <div class="col-auto"><q-btn round dense color="primary" icon="add" :disable="!newName.trim()" @click="addP"><q-tooltip>参加者を追加</q-tooltip></q-btn></div>
+              </div>
+              <div class="text-caption text-grey-6 q-mt-xs">追加した人は左の話者名プルダウンから選べます。</div>
+            </q-item-section>
+          </q-item>
+          <q-separator spaced></q-separator>
+
+          <!-- 事前資料: 案C（録音中に追加でき、清書にも反映される） -->
+          <q-item-label header class="row items-center">
+            事前資料 <q-space></q-space>
+            <q-icon name="edit" size="16px" color="grey-6"><q-tooltip>録音中も追加できます</q-tooltip></q-icon>
+          </q-item-label>
+          <q-item v-if="attachments.length===0"><q-item-section class="text-grey-6">（なし）</q-item-section></q-item>
+          <q-item v-for="(a,i) in attachments" :key="i">
+            <q-item-section avatar><q-icon :name="a.type==='xlsx'?'grid_on':'picture_as_pdf'" :color="a.type==='xlsx'?'green-7':'red-7'"></q-icon></q-item-section>
+            <q-item-section>
+              <q-item-label lines="1">{{ a.name }}</q-item-label>
+              <q-item-label caption>
+                <span v-if="a.status==='done'" class="text-green-8">清書に反映されます</span>
+                <span v-else class="text-grey-7">解析中… <q-spinner-dots size="1em" /></span>
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side class="row items-center no-wrap">
+              <q-btn v-if="a.status==='done'" flat round dense size="sm" icon="visibility" color="primary" @click="openPreview(a)"><q-tooltip>どうテキスト化されたか確認</q-tooltip></q-btn>
+              <q-btn flat round dense size="sm" icon="close" color="grey-6" @click="removeA(i)"><q-tooltip>削除</q-tooltip></q-btn>
+            </q-item-section>
+          </q-item>
+          <q-item>
+            <q-item-section>
+              <q-btn outline no-caps color="primary" icon="attach_file" label="資料を追加（Excel/PDF）" @click="addA"></q-btn>
+              <div class="text-caption text-grey-6 q-mt-xs">録音中に足した資料も、その後の清書（要約）に反映されます。</div>
+            </q-item-section>
+          </q-item>
+          <q-separator spaced></q-separator>
+
+          <q-item><q-item-section><q-toggle v-model="showRefined" label="LLM整形を表示" color="primary"></q-toggle></q-item-section></q-item>
+        </q-list>
+      </q-scroll-area>
+    </q-drawer>
+
+    <!-- メイン: 高さ固定の縦レイアウト。操作バーは固定、タイムラインだけ内部スクロール -->
+    <q-page-container>
+      <q-page class="fill-col" style="height:calc(100vh - 50px)">
+        <div class="q-pa-md fill-col" style="max-width:1200px;margin:0 auto;width:100%;flex:1 1 auto">
+
+          <!-- 固定領域: 案内バナー＋録音操作バー（スクロールしても残る＝要件3） -->
+          <div style="flex:0 0 auto">
+            <q-banner dense rounded class="bg-amber-1 q-mb-sm text-grey-9">
+              <template v-slot:avatar><q-icon name="info" color="amber-8"></q-icon></template>
+              <b>確定文字起こしが主役</b>（即時・不可変）。話者名をクリックすると参加者から選んで一括置換できます。
+              <q-btn flat dense round icon="menu_open" @click="drawer=!drawer" class="float-right"><q-tooltip>コンテキスト</q-tooltip></q-btn>
+            </q-banner>
+            <div class="row items-center q-mb-sm q-gutter-sm">
+              <q-btn unelevated no-caps color="amber-7" icon="pause" label="一時停止"></q-btn>
+              <q-btn unelevated no-caps color="grey-7" icon="stop" label="停止"></q-btn>
+              <q-chip dense color="red-2" text-color="red-10" icon="mic">録音中（{{ elapsed.slice(3) }}）</q-chip>
+              <q-space></q-space>
+              <q-btn flat dense no-caps color="primary" icon="add" label="発話を追加(デモ)" @click="addSeg"></q-btn>
+            </div>
+          </div>
+
+          <!-- スクロール領域: 左=タイムライン（独立スクロール）／右=人間メモ -->
+          <div class="fill-row" style="flex:1 1 0;gap:16px">
+            <!-- 左ペイン（約58%） -->
+            <div class="fill-col" style="flex:1 1 0;min-width:0">
+              <q-card flat bordered class="fill-col" style="flex:1 1 0">
+                <div class="timeline-scroll q-pa-md" style="flex:1 1 0" ref="scrollEl">
+                  <div v-for="(s,i) in timeline" :key="i" class="seg">
+                    <div class="row items-center">
+                      <q-badge :color="s.confirmed?'secondary':'blue-6'" :outline="!s.confirmed" class="q-mr-sm">
+                        <span class="spk">{{ displayName(s) }}</span>
+                        <q-icon name="arrow_drop_down"></q-icon>
+                        <q-menu>
+                          <q-list style="min-width:180px">
+                            <q-item-label header>話者を確定</q-item-label>
+                            <q-item v-if="participants.length===0"><q-item-section class="text-grey-6">右で参加者を追加してください</q-item-section></q-item>
+                            <q-item v-for="(p,pi) in participants" :key="pi" clickable v-close-popup @click="assign(s.speaker, label(p))">
+                              <q-item-section>{{ label(p) }}</q-item-section>
+                            </q-item>
+                          </q-list>
+                        </q-menu>
+                      </q-badge>
+                      <span class="text-caption text-grey-6">{{ s.t }}</span>
+                      <q-space></q-space>
+                      <q-btn flat dense round size="sm" icon="arrow_forward" color="primary"><q-tooltip>右の人間メモへコピー</q-tooltip></q-btn>
+                    </div>
+                    <div class="q-mt-xs">{{ s.text }}</div>
+                    <div v-if="showRefined && s.refined" class="refined"><q-icon name="auto_fix_high" size="14px"></q-icon> {{ s.refined }}</div>
+                  </div>
+                </div>
+              </q-card>
+            </div>
+
+            <!-- 右ペイン: 人間メモ（約42%） -->
+            <div class="fill-col" style="flex:0 0 40%;min-width:0">
+              <q-card flat bordered class="fill-col" style="flex:1 1 0">
+                <q-card-section class="q-pb-none" style="flex:0 0 auto">
+                  <div class="row items-center">
+                    <q-icon name="edit_note" color="orange-8" size="20px" class="q-mr-xs"></q-icon>
+                    <span class="text-subtitle2">人間メモ（同時編集）</span>
+                  </div>
+                </q-card-section>
+                <div class="q-pa-md" style="flex:1 1 0;min-height:0;display:flex">
+                  <q-input v-model="memo" type="textarea" outlined class="fit"
+                    input-style="height:100%;resize:none" style="width:100%" placeholder="📝 ここにメモを書けます。左の文字起こしは → ボタンで取り込めます。" />
+                </div>
+              </q-card>
+            </div>
+          </div>
+
+        </div>
+      </q-page>
+    </q-page-container>
+
+    <!-- 抽出テキストのプレビュー（どうテキスト化されたか確認・S-02/S-03 と同じ作法） -->
+    <q-dialog v-model="previewOpen">
+      <q-card style="width:720px;max-width:92vw">
+        <q-card-section class="row items-center q-pb-none">
+          <q-icon name="description" color="primary" class="q-mr-sm"></q-icon>
+          <div class="text-subtitle1 ellipsis">{{ previewName }}</div>
+          <q-space></q-space>
+          <q-btn flat dense no-caps size="sm" icon="content_copy" label="コピー" color="primary"></q-btn>
+          <q-btn flat round dense icon="close" v-close-popup></q-btn>
+        </q-card-section>
+        <q-card-section class="text-caption text-grey-7 q-pt-xs">
+          AIの清書に渡るのと同じ内容です。シート/ページごとに見出し・表へ構造化しています。
+        </q-card-section>
+        <q-separator></q-separator>
+        <q-card-section><pre style="white-space:pre-wrap;font-size:.85rem;max-height:50vh;overflow:auto;margin:0">{{ previewText }}</pre></q-card-section>
+      </q-card>
+    </q-dialog>
+  </q-layout>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/quasar@2/dist/quasar.umd.prod.js"></script>
+<script>
+const { createApp, ref, reactive, nextTick } = Vue
+const NAV=[{id:'カレンダー',name:'',icon:'calendar_month'},{id:'今すぐ録音',name:'',icon:'mic'},{id:'設定',name:'',icon:'settings'},{id:'S-05',name:'リアルタイム',icon:'graphic_eq'}]
+createApp({
+  setup(){
+    const leftDrawer=ref(true), drawer=ref(true), showRefined=ref(true)
+    const elapsed=ref('00:01:51'), latency=ref(0), drops=ref(0)
+    const nav=NAV, active='S-05'
+    // 録音中に編集できる前提（要件1）
+    const agenda=ref('')
+    const participants=reactive([])
+    const newName=ref(''), newRole=ref('')
+    const label=(p)=> p.role ? `${p.name}（${p.role}）` : p.name
+    const addP=()=>{ if(newName.value.trim()){ participants.push({name:newName.value.trim(), role:newRole.value.trim()}); newName.value=''; newRole.value='' } }
+    const removeP=(i)=>{ participants.splice(i,1) }
+    const attachments=reactive([])
+    // 事前資料（案C）: 追加→解析中→done。実装ではTauriのファイル選択→抽出サイドカー。
+    const FAKE=[
+      {name:'前回議事録.pdf',type:'pdf',extract:'# 前回議事録.pdf\n\n## ページ1\n- 決定: 仕様レビューは隔週で実施\n- 宿題: 田中さんが見積もりを次回までに提出\n- 次回: 6/16（月）10:00〜'},
+      {name:'予算表_2026Q2.xlsx',type:'xlsx',extract:'# 予算表_2026Q2.xlsx\n\n## シート: Q2\n| 項目 | 金額(千円) |\n| --- | --- |\n| 人件費 | 4,200 |\n| 外注費 | 1,150 |\n| 合計 | 5,350 |'},
+      {name:'要件メモ.pdf',type:'pdf',extract:'# 要件メモ.pdf\n\n## ページ1\n- 録音中に資料を追加できること\n- 追加資料は清書に反映されること\n- 抽出結果を確認できること'},
+    ]
+    let aIdx=0
+    const addA=()=>{ const f=FAKE[aIdx++ % FAKE.length]; const item=reactive({name:f.name,type:f.type,status:'pending',extract:f.extract}); attachments.push(item); setTimeout(()=>{ item.status='done' }, 900) }
+    const removeA=(i)=>{ attachments.splice(i,1) }
+    // 抽出テキストのプレビュー
+    const previewOpen=ref(false), previewName=ref(''), previewText=ref('')
+    const openPreview=(a)=>{ previewName.value=a.name; previewText.value=a.extract||'(本文なし)'; previewOpen.value=true }
+
+    const mapping=reactive({})
+    const SEED=[
+      'おはようございます','それでは、今日のミーティングを始めたいと思います。','議事録についても正しく記録されていることを確認しています',
+      'お、素晴らしい。クマの目撃情報が','あっちこっちで食べているそうです。','提案し、ワンちゃんを使うことにしておきましょう。',
+      '新しい仕様の方針についてご参考になればと思います。','要は何を作り、どう動かすのか、整理しましょう。','声が小さいとちゃんと聞こえないかもしれませんね',
+      'では次のアジェンダに移ります。','このあたりは持ち帰りで確認します。','以上で本日の議題は終わりです。'
+    ]
+    const timeline=reactive(SEED.map((text,i)=>({speaker:'spk0', t:'00:'+String(i*8).padStart(2,'0'), text, refined: i%3===0? text+'（整形済み）':null, confirmed:false})))
+    const displayName=(s)=> mapping[s.speaker] || s.speaker
+    const assign=(sid,name)=>{ mapping[sid]=name; timeline.forEach(x=>{ if(x.speaker===sid) x.confirmed=true }) }
+
+    const scrollEl=ref(null)
+    const addSeg=async()=>{
+      timeline.push({speaker:'spk0', t:elapsed.value.slice(3), text:'（新しい発話）追記が下に伸びてもエリア内だけスクロールします。', refined:null, confirmed:false})
+      await nextTick()
+      const el = scrollEl.value && scrollEl.value.$el ? scrollEl.value.$el : scrollEl.value
+      if(el){ el.scrollTop = el.scrollHeight }   // 最下部に自動追従（実装では上方閲覧中は抑止する）
+    }
+    return { leftDrawer, drawer, showRefined, elapsed, latency, drops, nav, active,
+      agenda, participants, newName, newRole, label, addP, removeP, attachments, addA, removeA,
+      previewOpen, previewName, previewText, openPreview,
+      timeline, displayName, assign, mapping, scrollEl, addSeg }
+  }
+}).use(Quasar).mount('#q-app')
+</script>
+</body>
+</html>
