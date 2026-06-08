@@ -214,6 +214,7 @@ onMounted(async () => {
         ...detail.participants.map((p) => ({ name: p.name, role: p.role ?? "", voice: p.voice_hint ?? "" })),
       );
       savedAttachments.value = await listAttachments(id); // 既存の添付を表示（DD-012-10）
+      vocab.value = detail.vocab ?? []; // 既存の専門用語を読み込む（Bug#7。ダミー既定で上書きしない）
     } catch (e) {
       errorMsg.value = String(e);
     }
@@ -268,8 +269,12 @@ const save = async (): Promise<void> => {
         scheduled_end: toIso(end.value),
         updated_at: now,
       };
-      // 完了会議は参加者を保護（undefined＝参加者に触れない）。予定は全入替。
-      await updateMeeting(m, participantsLocked.value ? undefined : toDbParticipants(m.id));
+      // 完了会議は参加者を保護（undefined＝参加者に触れない）。予定は全入替。専門用語も全入替（Bug#7）。
+      await updateMeeting(
+        m,
+        participantsLocked.value ? undefined : toDbParticipants(m.id),
+        vocab.value,
+      );
     } else {
       const id = meetingId.value; // 新規用に採番済みのid（添付の保存待ち列と一致させる）
       const meeting: Meeting = {
@@ -289,7 +294,7 @@ const save = async (): Promise<void> => {
         created_at: now,
         updated_at: now,
       };
-      await createMeeting(meeting, toDbParticipants(id));
+      await createMeeting(meeting, toDbParticipants(id), [], [], vocab.value); // 専門用語も保存（Bug#7）
       // 会議が出来てから保存待ちの資料を取り込む（コピー＋オフライン抽出）。失敗は通知のみで保存は妨げない。
       for (const f of pendingFiles.value) {
         try {

@@ -63,6 +63,7 @@ export interface MeetingDetail {
   participants: Participant[];
   timeline: TimelineElement[];
   speaker_mappings: SpeakerMapping[];
+  vocab: string[]; // 専門用語（DD-012-12 Bug#7）
 }
 
 /** 指定年月の会議一覧（scheduled_start 昇順）。month は 1-12。 */
@@ -75,8 +76,9 @@ export const createMeeting = (
   participants: Participant[],
   timeline: TimelineElement[] = [],
   speakerMappings: SpeakerMapping[] = [],
+  vocab: string[] = [],
 ): Promise<void> =>
-  invoke<void>("create_meeting", { meeting, participants, timeline, speakerMappings });
+  invoke<void>("create_meeting", { meeting, participants, timeline, speakerMappings, vocab });
 
 /** 会議1件の詳細（本体＋参加者＋タイムライン）。無ければ null。 */
 export const getMeetingDetail = (id: string): Promise<MeetingDetail | null> =>
@@ -116,10 +118,18 @@ export const updateMeetingSchedule = (
 ): Promise<void> =>
   invoke<void>("update_meeting_schedule", { id, scheduledStart, scheduledEnd, updatedAt });
 
-/** 会議の編集（S-02 編集モード / DD-012-9）。会議行を更新。`participants` 省略時は参加者に触れない
- *  （完了会議の話者リンク保全用）。渡した場合は全入替。 */
-export const updateMeeting = (meeting: Meeting, participants?: Participant[]): Promise<void> =>
-  invoke<void>("update_meeting", { meeting, participants: participants ?? null });
+/** 会議の編集（S-02 編集モード / DD-012-9）。会議行を更新。`participants`/`vocab` 省略時はそれぞれ
+ *  触れない（完了会議の話者リンク保全用）。渡した場合は全入替（DD-012-12 Bug#7: vocab を追加）。 */
+export const updateMeeting = (
+  meeting: Meeting,
+  participants?: Participant[],
+  vocab?: string[],
+): Promise<void> =>
+  invoke<void>("update_meeting", {
+    meeting,
+    participants: participants ?? null,
+    vocab: vocab ?? null,
+  });
 
 export type ParseStatus = "pending" | "done" | "error";
 

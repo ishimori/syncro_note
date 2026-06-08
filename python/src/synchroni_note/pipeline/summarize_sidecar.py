@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         help="事前資料(Excel/PDF抽出本文)のファイルパス。清書プロンプトの前提資料に連結(DD-012-10)",
     )
     parser.add_argument(
+        "--vocab",
+        default="",
+        help="専門用語(カンマ区切り)。清書プロンプトの前提『専門用語』に渡す(DD-012-12 Bug#7)",
+    )
+    parser.add_argument(
         "--no-switch",
         action="store_true",
         help="モデル切替をスキップ（既に batch 常駐 or 検証用）",
@@ -131,12 +136,14 @@ def main(argv: list[str] | None = None) -> int:
         # 清書ストリーミング（最初のトークンで batch がロードされる）。
         from synchroni_note.pipeline.summarize import stream_summarize
 
+        vocab = [w.strip() for w in args.vocab.split(",") if w.strip()]
         stream = stream_summarize(
             transcript,
             model=args.model,
             title=args.title,
             agenda=args.agenda,
             materials=materials,
+            vocab=vocab,
         )
         for event in stream_to_events(stream):
             emit(event)

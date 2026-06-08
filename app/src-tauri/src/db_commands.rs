@@ -23,6 +23,7 @@ pub struct MeetingDetail {
     pub participants: Vec<Participant>,
     pub timeline: Vec<TimelineElement>,
     pub speaker_mappings: Vec<SpeakerMapping>, // 話者番号→名前（S-03 表示名解決・DD-012-11）
+    pub vocab: Vec<String>, // 専門用語（S-02/04/05 表示・清書プロンプト・DD-012-12）
 }
 
 /// セットアップ時に DB を開いて `DbState` を manage する。
@@ -70,9 +71,10 @@ pub fn create_meeting(
     participants: Vec<Participant>,
     timeline: Vec<TimelineElement>,
     speaker_mappings: Vec<SpeakerMapping>,
+    vocab: Vec<String>,
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    // meeting→participants→timeline→speaker_mappings を1トランザクションで（途中失敗で半端を残さない）。
+    // meeting→participants→timeline→speaker_mappings→vocab を1トランザクションで（途中失敗で半端を残さない）。
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     map_err(db::insert_meeting(&tx, &meeting))?;
     for p in &participants {
@@ -83,6 +85,9 @@ pub fn create_meeting(
     }
     for sm in &speaker_mappings {
         map_err(db::insert_speaker_mapping(&tx, sm))?;
+    }
+    for w in &vocab {
+        map_err(db::insert_vocabulary(&tx, &meeting.id, w))?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -123,6 +128,7 @@ pub fn update_meeting(
     state: State<'_, DbState>,
     meeting: Meeting,
     participants: Option<Vec<Participant>>,
+    vocab: Option<Vec<String>>,
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -131,6 +137,13 @@ pub fn update_meeting(
         map_err(db::delete_participants(&tx, &meeting.id))?;
         for p in ps {
             map_err(db::insert_participant(&tx, p))?;
+        }
+    }
+    // 専門用語も Some のときだけ全入替（None＝触れない・DD-012-12 Bug#7）。
+    if let Some(ws) = &vocab {
+        map_err(db::delete_vocabularies(&tx, &meeting.id))?;
+        for w in ws {
+            map_err(db::insert_vocabulary(&tx, &meeting.id, w))?;
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -188,11 +201,13 @@ pub fn get_meeting_detail(
     let participants = map_err(db::list_participants(&conn, &id))?;
     let timeline = map_err(db::list_timeline(&conn, &id))?;
     let speaker_mappings = map_err(db::list_speaker_mappings(&conn, &id))?;
+    let vocab = map_err(db::list_vocabularies(&conn, &id))?;
     Ok(Some(MeetingDetail {
         meeting,
         participants,
         timeline,
         speaker_mappings,
+        vocab,
     }))
 }
 

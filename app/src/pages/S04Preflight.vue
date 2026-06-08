@@ -32,6 +32,7 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 const meetingTitle = ref("その場で録音");
 const meetingParticipants = ref<string[]>([]);
 const meetingAgenda = ref("");
+const meetingVocab = ref<string[]>([]); // 専門用語（DD-012-12 Bug#7・実データ）
 
 // マイク（実デバイス列挙は別DD。当面は設定の既定 or 固定候補）
 const mics: string[] = ["既定 - マイク配列 (Realtek)", "USB会議マイク", "ヘッドセット"];
@@ -64,6 +65,7 @@ onMounted(async () => {
           p.role ? `${p.name}（${p.role}）` : p.name,
         );
         meetingAgenda.value = d.meeting.agenda ?? "";
+        meetingVocab.value = d.vocab ?? [];
       }
     } catch {
       /* 取得失敗時は既定表示のまま */
@@ -145,6 +147,9 @@ const startRecording = (): void => {
             </div>
             <div v-if="meetingAgenda" class="text-grey-7 q-mt-xs" style="white-space: pre-wrap">
               アジェンダ: {{ meetingAgenda }}
+            </div>
+            <div v-if="meetingVocab.length" class="text-grey-7 q-mt-xs">
+              用語: {{ meetingVocab.join(", ") }}
             </div>
           </q-card-section>
         </q-card>

@@ -470,6 +470,34 @@ pub fn delete_attachment(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+// ============ vocabularies（専門用語・DD-012-12 Bug#7） ============
+
+/// 専門用語を1件挿入する（`UNIQUE(meeting_id, word)`。重複は無視）。
+pub fn insert_vocabulary(conn: &Connection, meeting_id: &str, word: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO vocabularies (meeting_id, word) VALUES (?1, ?2)",
+        params![meeting_id, word],
+    )?;
+    Ok(())
+}
+
+/// 会議の専門用語を登録順（id 昇順）で返す（S-02/04/05 表示・清書プロンプト）。
+pub fn list_vocabularies(conn: &Connection, meeting_id: &str) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT word FROM vocabularies WHERE meeting_id = ?1 ORDER BY id ASC")?;
+    let rows = stmt.query_map(params![meeting_id], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// 会議の専門用語を全削除する（編集での全入替の前処理）。
+pub fn delete_vocabularies(conn: &Connection, meeting_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM vocabularies WHERE meeting_id = ?1",
+        params![meeting_id],
+    )?;
+    Ok(())
+}
+
 // ============ app_settings（単一行・DD-012-7） ============
 
 /// アプリ設定（`app_settings` 単一行 id=1）。S-08 のフォームと1:1。
@@ -1111,5 +1139,24 @@ mod tests {
         insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled")).unwrap();
         assert!(insert_attachment(&conn, &attachment("a1", "m1", "x.docx", "docx")).is_err()); // CHECK
         assert!(insert_attachment(&conn, &attachment("a2", "none", "x.pdf", "pdf")).is_err()); // FK
+    }
+
+    #[test]
+    fn vocabulary_crud_dedup_and_cascade() {
+        // DD-012-12 Bug#7: 専門用語の保存・登録順・重複無視・全入替・会議削除でCASCADE。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled")).unwrap();
+        for w in ["Qwen", "Tauri", "Qwen"] {
+            // 同じ語は UNIQUE(meeting_id, word) で無視される
+            insert_vocabulary(&conn, "m1", w).unwrap();
+        }
+        assert_eq!(list_vocabularies(&conn, "m1").unwrap(), vec!["Qwen", "Tauri"]); // 登録順・重複無視
+        // 全入替（編集）
+        delete_vocabularies(&conn, "m1").unwrap();
+        insert_vocabulary(&conn, "m1", "SQLite").unwrap();
+        assert_eq!(list_vocabularies(&conn, "m1").unwrap(), vec!["SQLite"]);
+        // 会議削除で CASCADE
+        delete_meeting(&conn, "m1").unwrap();
+        assert!(list_vocabularies(&conn, "m1").unwrap().is_empty());
     }
 }

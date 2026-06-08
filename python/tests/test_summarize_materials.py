@@ -28,6 +28,14 @@ def test_no_materials_section_when_absent_or_blank() -> None:
     assert "--- 事前資料 ---" not in blank
 
 
+def test_vocab_appears_in_prompt() -> None:
+    # DD-012-12 Bug#7: 専門用語が清書プロンプトの前提に入る（STT/清書の固有名詞精度向上）。
+    prompt = build_minutes_prompt("本文", vocab=["Qwen", "SynchroniNote"])
+    assert "専門用語: Qwen, SynchroniNote" in prompt
+    # 空なら専門用語行は出ない。
+    assert "専門用語:" not in build_minutes_prompt("本文")
+
+
 def test_materials_coexist_with_title_and_agenda() -> None:
     prompt = build_minutes_prompt(
         "本文",

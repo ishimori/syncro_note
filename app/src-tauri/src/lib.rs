@@ -428,6 +428,19 @@ fn write_materials_file(app: &AppHandle, meeting_id: &str) -> Option<String> {
     Some(path.to_string_lossy().to_string())
 }
 
+/// 会議の専門用語をカンマ区切りで返す（清書プロンプトの「専門用語」へ・DD-012-12 Bug#7）。無ければ None。
+fn gather_vocab(app: &AppHandle, meeting_id: &str) -> Option<String> {
+    let words = {
+        let state = app.state::<db_commands::DbState>();
+        let conn = state.0.lock().ok()?;
+        db::list_vocabularies(&conn, meeting_id).ok()?
+    };
+    if words.is_empty() {
+        return None;
+    }
+    Some(words.join(","))
+}
+
 /// 会議終了→清書（DD-012-2）。確定テキスト(＋人間メモ)を stdin で渡し、gemma で議事録Markdownに
 /// 清書して進捗を summary-* イベントで中継する。モデルは S-08 設定に従う（DD-012-7）。
 ///
@@ -447,10 +460,13 @@ fn start_summarize(
     let materials_path = meeting_id
         .as_deref()
         .and_then(|id| write_materials_file(&app, id));
+    // 専門用語（Bug#7）: meeting_id があれば vocab をカンマ区切りで清書へ渡す。
+    let vocab_csv = meeting_id.as_deref().and_then(|id| gather_vocab(&app, id));
     eprintln!(
-        "[summary] start batch={batch_model} live={live_model} chars={} materials={}",
+        "[summary] start batch={batch_model} live={live_model} chars={} materials={} vocab={}",
         transcript.len(),
-        materials_path.is_some()
+        materials_path.is_some(),
+        vocab_csv.is_some()
     );
     let mut args: Vec<&str> = vec![
         "run",
@@ -470,6 +486,10 @@ fn start_summarize(
     if let Some(ref p) = materials_path {
         args.push("--materials-file");
         args.push(p.as_str());
+    }
+    if let Some(ref v) = vocab_csv {
+        args.push("--vocab");
+        args.push(v.as_str());
     }
     spawn_and_relay(
         &app,

@@ -348,6 +348,7 @@ onMounted(async () => {
         // 右パネルを実データで満たす（参加者・アジェンダ・事前資料）。ダミーを排し実際の前提を見せる。
         participants.value = d.participants.map((p) => (p.role ? `${p.name}（${p.role}）` : p.name));
         agenda.value = d.meeting.agenda ?? "";
+        vocab.value = d.vocab ?? []; // 専門用語を実データに（Bug#7。空なら専門用語セクション非表示）
         attachments.value = await listAttachments(qid);
       }
     } catch {
