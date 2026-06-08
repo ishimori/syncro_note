@@ -139,6 +139,27 @@ const attachIcon = (type: string): string => (type === "xlsx" ? "grid_on" : "pic
 const attachIconColor = (type: string): string => (type === "xlsx" ? "green-7" : "red-7");
 const isEmptyExtract = (a: Attachment): boolean =>
   a.parse_status === "done" && !(a.extracted_text && a.extracted_text.trim());
+// 抽出済み（done かつ本文あり）＝プレビュー可能。
+const canPreview = (a: Attachment): boolean =>
+  a.parse_status === "done" && !!(a.extracted_text && a.extracted_text.trim());
+
+// 抽出テキストのプレビュー（清書まで進めず、いつでも中身を確認する・DD-012-10）。
+const previewOpen = ref(false);
+const previewName = ref("");
+const previewText = ref("");
+const openPreview = (a: Attachment): void => {
+  previewName.value = a.file_name;
+  previewText.value = a.extracted_text ?? "";
+  previewOpen.value = true;
+};
+const copyPreview = async (): Promise<void> => {
+  try {
+    await navigator.clipboard.writeText(previewText.value);
+    $q.notify({ message: "抽出テキストをコピーしました", color: "indigo", icon: "content_copy", timeout: 1500 });
+  } catch {
+    $q.notify({ message: "コピーに失敗しました", color: "negative", icon: "error" });
+  }
+};
 
 // 保存処理
 const saving = ref(false);
@@ -454,6 +475,17 @@ const save = async (): Promise<void> => {
                   <q-badge v-else-if="a.parse_status === 'error'" color="red-6" label="失敗" class="q-mr-sm" />
                   <q-badge v-else-if="isEmptyExtract(a)" color="orange-7" label="本文なし" class="q-mr-sm" />
                   <q-badge v-else color="green-6" label="完了" class="q-mr-sm" />
+                  <q-btn
+                    v-if="canPreview(a)"
+                    flat
+                    round
+                    dense
+                    icon="visibility"
+                    color="primary"
+                    @click="openPreview(a)"
+                  >
+                    <q-tooltip>抽出テキストを確認</q-tooltip>
+                  </q-btn>
                   <q-btn flat round dense icon="close" color="grey-6" @click="removeSaved(a.id)" />
                 </q-item-section>
               </q-item>
@@ -503,6 +535,38 @@ const save = async (): Promise<void> => {
         </div>
       </q-page>
     </q-page-container>
+
+    <!-- 抽出テキストのプレビュー（清書まで進めず中身を確認・DD-012-10） -->
+    <q-dialog v-model="previewOpen">
+      <q-card style="width: 720px; max-width: 92vw">
+        <q-card-section class="row items-center q-pb-none">
+          <q-icon name="description" color="primary" class="q-mr-sm" />
+          <div class="text-subtitle1 ellipsis">{{ previewName }}</div>
+          <q-space />
+          <q-btn flat dense no-caps size="sm" icon="content_copy" label="コピー" color="primary" @click="copyPreview" />
+          <q-btn flat round dense icon="close" v-close-popup />
+        </q-card-section>
+        <q-card-section class="text-caption text-grey-7 q-pt-xs">
+          AIの清書に渡るのと同じ抽出テキストです（xlsx=シート/セル, pdf=本文）。
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <pre class="extract-preview">{{ previewText }}</pre>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
+
+<style scoped>
+.extract-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 55vh;
+  overflow: auto;
+  margin: 0;
+  font-size: 0.85rem;
+  color: #334155;
+}
+</style>
 
