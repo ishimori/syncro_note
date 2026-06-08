@@ -2,7 +2,7 @@
 // S-04 会議開始の準備（プリフライト）。DD-012-8 で実データ化。
 // 正＝設計SSOT doc/spec/画面設計書.md §S-04（入力レベル・無音時は録音開始を抑止・既定は app_settings）。
 // 入力レベルは軽量サイドカー(--level)の実測RMSを stt-level イベントで受ける。実マイク確認は実ウィンドウ。
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter, useRoute } from "vue-router";
@@ -34,10 +34,24 @@ const meetingParticipants = ref<string[]>([]);
 const meetingAgenda = ref("");
 const meetingVocab = ref<string[]>([]); // 専門用語（DD-012-12 Bug#7・実データ）
 
-// マイク（実デバイス列挙は別DD。当面は設定の既定 or 固定候補）
-const mics: string[] = ["既定 - マイク配列 (Realtek)", "USB会議マイク", "ヘッドセット"];
-const mic = ref<string>(mics[0]);
+// マイク（実デバイス列挙・DD-012-14）。list_input_devices の実機一覧から選ぶ。
+interface DeviceItem {
+  index: number;
+  name: string;
+  hostapi: string;
+  default: boolean;
+}
+const mics = ref<string[]>([]); // プルダウン表示用のデバイス名
+const deviceItems = ref<DeviceItem[]>([]); // 名前→番号の対応元
+const mic = ref<string>("");
 const useLlm = ref(true);
+// 設定の全体を保持（mic_device をここへ書き戻して save_settings する・他フィールドは保全）。
+let fullSettings: Record<string, unknown> | null = null;
+let levelStarted = false; // 初回計測を始めたか（プリセレクト時の二重起動を防ぐ）
+
+// 選択中デバイス名 → sounddevice の index（見つからなければ null＝Rust側で設定/既定に解決）。
+const deviceIndexFor = (name: string): number | null =>
+  deviceItems.value.find((d) => d.name === name)?.index ?? null;
 
 // モデル表示（S-08 設定の実値を反映）
 const sttModel = ref("whisper base");
@@ -46,12 +60,49 @@ const liveModel = ref("qwen3:8b");
 
 // 入力レベル（実測 RMS → 0-100 表示）と無音ガード
 const level = ref(0);
-const detected = ref(false); // 直近に入力ありか（メータ脇のライブ表示用）
-const everDetected = ref(false); // 一度でも入力を検出したか（録音開始の解放条件・無音で戻さない）
+// 一度でも入力を検出したか。無音に戻っても下げない（録音開始の解放条件・ステータス表示の両方）。
+// 入力デバイスを変更したときだけ false に戻す（下の watch）。
+const everDetected = ref(false);
 const SILENCE_RMS = 0.015; // これ未満は無音扱い（暗騒音を弾く小さめ閾値・つまみ）
-let lastVoiceAt = 0;
 
 const unlisteners: UnlistenFn[] = [];
+
+// 選択デバイスでレベル計測サイドカーを起動（実マイク）。番号は選択名から解決して渡す（DD-012-14）。
+const startLevel = async (): Promise<void> => {
+  if (!isTauri) return;
+  try {
+    await invoke("start_level", { simulate: null, device: deviceIndexFor(mic.value) });
+    levelStarted = true;
+  } catch {
+    /* マイク無し等は無音ガードで録音開始が抑止される */
+  }
+};
+
+// 選択デバイス名を設定へ永続化（S-05 の録音は設定の mic_device から収音デバイスを解決する）。
+const persistMic = async (): Promise<void> => {
+  if (!isTauri || !fullSettings) return;
+  try {
+    const settings = { ...fullSettings, mic_device: mic.value, updated_at: new Date().toISOString() };
+    await invoke("save_settings", { settings });
+    fullSettings = settings;
+  } catch {
+    /* 保存失敗は致命的でない（今回の計測自体は選択デバイスで動く） */
+  }
+};
+
+// 入力デバイスを変えたら検出状態をリセットし、選択デバイスで計測を取り直す＋設定へ保存（DD-012-14）。
+watch(mic, async () => {
+  everDetected.value = false; // 一度検出の latch をリセット（新デバイスで話して確認し直す）
+  level.value = 0;
+  if (!levelStarted) return; // 初期プリセレクト時は onMounted の初回起動に任せる
+  try {
+    await invoke("stop_mic"); // 旧デバイスの計測を止めてから
+  } catch {
+    /* セッションが無ければ無視 */
+  }
+  await persistMic();
+  await startLevel();
+});
 
 onMounted(async () => {
   if (!isTauri) return;
@@ -71,10 +122,10 @@ onMounted(async () => {
       /* 取得失敗時は既定表示のまま */
     }
   }
-  // 既定を app_settings から反映
+  // 既定を app_settings から反映（全体を fullSettings に保持し、mic_device 書き戻しに使う）。
   try {
     const s = await invoke<AppSettings>("get_settings");
-    if (s.mic_device) mic.value = s.mic_device;
+    fullSettings = s as unknown as Record<string, unknown>;
     if (s.stt_model) sttModel.value = s.stt_model;
     if (s.whisper_n_threads != null) sttThreads.value = s.whisper_n_threads;
     if (s.live_model) liveModel.value = s.live_model;
@@ -88,18 +139,25 @@ onMounted(async () => {
       const rms = e.payload.rms;
       level.value = Math.min(100, Math.round(rms * 800));
       if (rms >= SILENCE_RMS) {
-        lastVoiceAt = Date.now();
-        everDetected.value = true; // 一度検出したら以後は録音開始を許可し続ける
+        everDetected.value = true; // 一度検出したら以後は無音でも下げない（録音開始を許可し続ける）
       }
-      detected.value = Date.now() - lastVoiceAt < 1500;
     }),
   );
-  // レベル計測サイドカーを起動（実マイク）
+  // 実入力デバイスを列挙してプルダウンを満たす（DD-012-14）。
+  // 初期選択は「設定の mic_device に完全一致＞既定フラグ＞先頭」。完全一致のみ＝S-05 の録音解決
+  // （Rust resolve_mic_device も完全一致）と必ず同じデバイスに着地させる（DD-012-14 レビュー）。
   try {
-    await invoke("start_level", { simulate: null });
+    const devs = await invoke<DeviceItem[]>("list_input_devices");
+    deviceItems.value = devs;
+    mics.value = devs.map((d) => d.name);
+    const saved = typeof fullSettings?.mic_device === "string" ? (fullSettings.mic_device as string) : "";
+    const pick = devs.find((d) => d.name === saved) ?? devs.find((d) => d.default) ?? devs[0];
+    if (pick) mic.value = pick.name; // watch が走るが levelStarted=false なので状態リセットのみ
   } catch {
-    /* マイク無し等は無音ガードで録音開始が抑止される */
+    /* 列挙失敗時は空のまま（device=null → Rust が設定/OS既定に解決して計測） */
   }
+  // レベル計測サイドカーを起動（選択デバイス・実マイク）
+  await startLevel();
 });
 
 onUnmounted(() => {
@@ -169,12 +227,12 @@ const startRecording = (): void => {
             <q-item dense class="q-pa-none">
               <q-item-section avatar>
                 <q-icon
-                  :name="detected ? 'check_circle' : 'warning'"
-                  :color="detected ? 'green-6' : 'amber-7'"
+                  :name="everDetected ? 'check_circle' : 'warning'"
+                  :color="everDetected ? 'green-6' : 'amber-7'"
                 />
               </q-item-section>
               <q-item-section>
-                {{ detected ? "入力を検出（録音できます）" : "マイク入力が検出できません（話すとバーが動きます）" }}
+                {{ everDetected ? "入力を検出（録音できます）" : "マイク入力が検出できません（話すとバーが動きます）" }}
               </q-item-section>
             </q-item>
           </q-card-section>

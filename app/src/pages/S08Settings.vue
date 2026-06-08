@@ -29,9 +29,15 @@ const router = useRouter();
 
 const leftDrawer = ref(true);
 
-// マイク
-const mics: string[] = ["既定 - マイク配列 (Realtek)", "USB会議マイク", "ヘッドセット"];
-const mic = ref<string>("既定 - マイク配列 (Realtek)");
+// マイク（実デバイス列挙・DD-012-14）。list_input_devices の実機一覧から選ぶ。
+interface DeviceItem {
+  index: number;
+  name: string;
+  hostapi: string;
+  default: boolean;
+}
+const mics = ref<string[]>([]);
+const mic = ref<string>("");
 
 // モデル
 // STT も同じ { value, label, caption } 方式。基準は速度↔日本語精度のトレードオフ
@@ -75,6 +81,15 @@ const savedMsg = ref("");
 
 onMounted(async () => {
   if (!isTauri) return;
+  // 実入力デバイスを列挙（DD-012-14）。失敗しても設定の他項目は読み込む。
+  try {
+    const devs = await invoke<DeviceItem[]>("list_input_devices");
+    mics.value = devs.map((d) => d.name);
+    const def = devs.find((d) => d.default) ?? devs[0];
+    if (def) mic.value = def.name; // 既定を初期選択（保存値があれば下で上書き）
+  } catch {
+    /* 列挙失敗時は空のまま（保存値があれば下で入る） */
+  }
   try {
     const s = await invoke<AppSettings>("get_settings");
     if (s.mic_device) mic.value = s.mic_device;

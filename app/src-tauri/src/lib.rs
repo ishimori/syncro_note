@@ -163,6 +163,85 @@ fn parse_calendar_text(text: String) -> Result<Value, String> {
     Err(format!("解析結果(JSON)を取得できません: {}", stderr.trim()))
 }
 
+/// 入力デバイス一覧をサイドカー（`--list-devices`）から**同期(ブロッキング)取得**する（DD-012-14）。
+///
+/// `extract_text_blocking`（DD-012-10）と同じ一発取り契約。返りは items 配列
+/// （`{index,name,hostapi,max_input_channels,default}`）。UIのデバイス選択と名前→番号解決で使う。
+fn list_input_devices_blocking() -> Result<Vec<Value>, String> {
+    let py_dir = repo_python_dir()?;
+    let mut cmd = Command::new("uv");
+    cmd.current_dir(&py_dir).env("PYTHONUTF8", "1").args([
+        "run",
+        "python",
+        "-m",
+        "synchroni_note.pipeline.sidecar",
+        "--list-devices",
+    ]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("デバイス列挙サイドカー起動失敗(uv は PATH にある?): {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 末尾から type=devices の行を拾う（前段に uv 警告が出ても無視）。
+    for line in stdout.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("devices") {
+            if v.get("status").and_then(|s| s.as_str()) == Some("done") {
+                return Ok(v
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .cloned()
+                    .unwrap_or_default());
+            }
+            return Err(v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("デバイス列挙に失敗しました")
+                .to_string());
+        }
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("デバイス一覧(JSON)を取得できません: {}", stderr.trim()))
+}
+
+/// 入力デバイス一覧を返す（S-04/S-08 のプルダウン用・DD-012-14）。
+#[tauri::command]
+fn list_input_devices() -> Result<Vec<Value>, String> {
+    list_input_devices_blocking()
+}
+
+/// 設定の `mic_device`(名前) を sounddevice の device index に解決する（DD-012-14）。
+///
+/// 未設定／一覧に一致なし／列挙失敗のいずれも `None`＝OS既定デバイスにフォールバックし、
+/// 計測・録音を止めない（抜き差しでデバイスが消えても安全側に倒す）。
+/// 照合は**完全一致のみ**: 保存名は UI が同じ列挙の `name` をそのまま書くため `==` で必ず当たる。
+/// 前方一致は別マイクの取り違え（例: 「マイク」と「マイク 2」）を生むため使わない（DD-012-14 レビュー）。
+fn resolve_mic_device(app: &AppHandle) -> Option<i64> {
+    let want = {
+        let state = app.state::<db_commands::DbState>();
+        let conn = state.0.lock().ok()?;
+        db::get_settings(&conn).ok()?.mic_device? // conn はこのブロックを抜けて解放（列挙の子プロセス前に手放す）
+    };
+    let want = want.trim();
+    if want.is_empty() {
+        return None;
+    }
+    let items = list_input_devices_blocking().ok()?;
+    for it in &items {
+        let name = it.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if name == want {
+            return it.get("index").and_then(|i| i.as_i64());
+        }
+    }
+    eprintln!("[mic] 設定のデバイス '{want}' が一覧に無いためOS既定にフォールバック");
+    None
+}
+
 /// サイドカーが流す JSON Lines を、どの Tauri イベント名へ中継するかの系統。
 /// STT（文字起こし）と Summary（清書・DD-012-2）で名前空間を分ける。
 #[derive(Clone, Copy)]
@@ -373,10 +452,17 @@ fn start_mic(
     let model = model.unwrap_or(cfg_model); // S-08 設定の STT モデル（DD-012-7）
     let threads = cfg_threads.to_string();
     let refine_model = live_refine_model(&app, refine); // DD-012-4: 今回ぶん上書き or 設定値
+    // 収音デバイス: 設定 mic_device(名前)→番号に解決（DD-012-14）。simulate 時は不要。None＝OS既定。
+    let dev_str = if simulate.is_none() {
+        resolve_mic_device(&app).map(|d| d.to_string())
+    } else {
+        None
+    };
     eprintln!(
-        "[stt] mic model={model} threads={threads} simulate={} refine={}",
+        "[stt] mic model={model} threads={threads} simulate={} refine={} device={}",
         simulate.is_some(),
-        refine_model.is_some()
+        refine_model.is_some(),
+        dev_str.as_deref().unwrap_or("default"),
     );
     let mut args: Vec<&str> = vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar"];
     match simulate.as_deref() {
@@ -390,6 +476,10 @@ fn start_mic(
     args.push(model.as_str());
     args.push("--threads");
     args.push(threads.as_str());
+    if let Some(d) = dev_str.as_deref() {
+        args.push("--device");
+        args.push(d);
+    }
     if let Some(live) = refine_model.as_deref() {
         args.push("--refine");
         args.push("--live-model");
@@ -432,12 +522,20 @@ fn start_level(
     app: AppHandle,
     state: State<'_, SttState>,
     simulate: Option<String>,
+    device: Option<i64>,
 ) -> Result<(), String> {
+    // 明示指定（UIがプルダウンの番号を渡す）を優先、無ければ設定の mic_device 名から解決（DD-012-14）。
+    let dev = device.or_else(|| resolve_mic_device(&app));
+    let dev_str = dev.map(|d| d.to_string());
     let mut args: Vec<&str> =
         vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar", "--level"];
     if let Some(path) = simulate.as_deref() {
         args.push("--simulate");
         args.push(path);
+    }
+    if let Some(d) = dev_str.as_deref() {
+        args.push("--device");
+        args.push(d);
     }
     spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
 }
@@ -624,6 +722,7 @@ pub fn run() {
             resume_mic,
             stop_mic,
             start_level,
+            list_input_devices,
             start_summarize,
             abort_summarize,
             parse_calendar_text,

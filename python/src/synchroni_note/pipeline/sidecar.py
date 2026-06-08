@@ -347,6 +347,70 @@ def _run_level(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_list_devices(_args: argparse.Namespace) -> int:
+    """入力デバイス一覧を1行 emit する（S-04/S-08 のデバイス選択・DD-012-14）。
+
+    成功: ``{"type":"devices","status":"done","items":[{index,name,hostapi,...,default}]}``
+    失敗: ``{"type":"devices","status":"error","message":..,"where":"devices"}``
+    sounddevice の device index（`query_devices` の位置）がそのまま ``--device`` に渡せる ID。
+    入力ch>0 のものだけを返す。既定入力は ``sd.default.device[0]`` で判定。
+    """
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+
+        # 既定入力デバイス名（プリセレクト判定用）。MMEは名前を31字に切る癖があり前方一致で照合。
+        default_name = ""
+        try:
+            default_name = str(devices[sd.default.device[0]].get("name", ""))
+        except Exception:  # noqa: BLE001  既定未設定環境
+            default_name = ""
+
+        def hostapi_name(d: dict) -> str:
+            try:
+                return str(hostapis[d["hostapi"]]["name"])
+            except Exception:  # noqa: BLE001
+                return ""
+
+        # 入力ch>0 のデバイス。Windowsは同じ物理マイクがMME/DirectSound/WASAPI/WDM-KSで重複し、
+        # 「サウンドマッパー」等の擬似デバイスも混じる。WASAPIは実エンドポイントが綺麗に並ぶので、
+        # WASAPI入力があればそれだけ採用しUIを分かりやすくする（無ければ全入力にフォールバック）。
+        inputs = [
+            (idx, d) for idx, d in enumerate(devices) if int(d.get("max_input_channels", 0)) > 0
+        ]
+        wasapi = [(idx, d) for idx, d in inputs if hostapi_name(d) == "Windows WASAPI"]
+        chosen = wasapi or inputs
+
+        def is_default(name: str) -> bool:
+            if not default_name or not name:
+                return False
+            return name.startswith(default_name) or default_name.startswith(name)
+
+        items: list[dict[str, object]] = []
+        for idx, d in chosen:
+            name = str(d.get("name", f"device {idx}"))
+            items.append(
+                {
+                    "index": idx,
+                    "name": name,
+                    "hostapi": hostapi_name(d),
+                    "max_input_channels": int(d.get("max_input_channels", 0)),
+                    "default": is_default(name),
+                }
+            )
+        # 既定が一覧で1つも当たらなければ先頭を既定扱い（UIのプリセレクトが必ず1件決まる）。
+        if items and not any(it["default"] for it in items):
+            items[0]["default"] = True
+        emit({"type": "devices", "status": "done", "items": items})
+        return 0
+    except Exception as e:  # noqa: BLE001  列挙不能でも error 行を1本返す（UIは既定にフォールバック）
+        emit({"type": "devices", "status": "error", "message": str(e), "where": "devices"})
+        print(f"[sidecar] list-devices {e!r}", file=sys.stderr, flush=True)
+        return 1
+
+
 def _run_extract(args: argparse.Namespace) -> int:
     """事前資料（xlsx/pdf）の本文抽出を1行 emit する（DD-012-10）。
 
@@ -390,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mic", action="store_true", help="実マイクからライブ収音")
     parser.add_argument("--level", action="store_true", help="入力レベル(RMS)のみemit(S-04)")
     parser.add_argument(
+        "--list-devices", dest="list_devices", action="store_true",
+        help="入力デバイス一覧をemit(S-04/S-08・DD-012-14)",
+    )
+    parser.add_argument(
         "--simulate", type=Path, default=None, help="ファイルをmic代替で流す(テスト)"
     )
     parser.add_argument("--model", default="medium", help="faster-whisper モデル")
@@ -417,6 +485,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.list_devices:
+            return _run_list_devices(args)
         if args.extract is not None:
             return _run_extract(args)
         if args.level:
