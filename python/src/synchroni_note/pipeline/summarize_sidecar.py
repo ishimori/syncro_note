@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default="", help="会議名（プロンプト前提に付与）")
     parser.add_argument("--agenda", default="", help="アジェンダ（プロンプト前提に付与）")
     parser.add_argument(
+        "--materials-file",
+        default="",
+        help="事前資料(Excel/PDF抽出本文)のファイルパス。清書プロンプトの前提資料に連結(DD-012-10)",
+    )
+    parser.add_argument(
         "--no-switch",
         action="store_true",
         help="モデル切替をスキップ（既に batch 常駐 or 検証用）",
@@ -95,7 +100,21 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         transcript = _read_transcript(args.transcript)
-        emit({"type": "summary-meta", "model": args.model, "input_chars": len(transcript)})
+        # 事前資料（DD-012-10）。指定があれば本文を読み、清書プロンプトの前提資料へ連結する。
+        materials = ""
+        if args.materials_file:
+            try:
+                materials = Path(args.materials_file).read_text(encoding="utf-8")
+            except OSError as e:  # 資料が読めなくても清書は止めない（書き起こしのみで続行）
+                print(f"[summarize-sidecar] materials skipped: {e!r}", file=sys.stderr, flush=True)
+        emit(
+            {
+                "type": "summary-meta",
+                "model": args.model,
+                "input_chars": len(transcript),
+                "materials_chars": len(materials),
+            }
+        )
 
         # モデル切替（live退避→ps空確認→batchロード準備）。段階を summary-status で通知。
         if not args.no_switch:
@@ -113,7 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         from synchroni_note.pipeline.summarize import stream_summarize
 
         stream = stream_summarize(
-            transcript, model=args.model, title=args.title, agenda=args.agenda
+            transcript,
+            model=args.model,
+            title=args.title,
+            agenda=args.agenda,
+            materials=materials,
         )
         for event in stream_to_events(stream):
             emit(event)

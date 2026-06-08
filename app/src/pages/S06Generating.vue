@@ -92,6 +92,7 @@ onMounted(async () => {
     await invoke("start_summarize", {
       transcript: minutesSession.transcript,
       title: minutesSession.title,
+      meetingId: minutesSession.meetingId, // 予定と紐づくとき、その事前資料を清書に統合（DD-012-10）
     });
   } catch (e) {
     errorMsg.value = String(e);

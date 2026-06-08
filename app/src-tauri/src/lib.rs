@@ -397,20 +397,59 @@ fn summarize_models(app: &AppHandle) -> (String, String) {
     }
 }
 
+/// 清書の前提資料（DD-012-10）を一時ファイルに書き、そのパスを返す。
+///
+/// 当該会議の `done` 添付の `extracted_text`（空でないもの）を「## ファイル名 + 本文」で連結し、
+/// `app_data_dir/summarize_materials.txt` に書く。done 資料が無ければ None（=資料なしで清書）。
+fn write_materials_file(app: &AppHandle, meeting_id: &str) -> Option<String> {
+    let attachments = {
+        let state = app.state::<db_commands::DbState>();
+        let conn = state.0.lock().ok()?;
+        db::list_attachments(&conn, meeting_id).ok()?
+    };
+    let mut buf = String::new();
+    for a in attachments {
+        if a.parse_status == "done" {
+            if let Some(t) = a.extracted_text.as_deref() {
+                if !t.trim().is_empty() {
+                    buf.push_str(&format!("## {}\n{}\n\n", a.file_name, t));
+                }
+            }
+        }
+    }
+    if buf.trim().is_empty() {
+        return None;
+    }
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("summarize_materials.txt");
+    std::fs::write(&path, buf).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
+
 /// 会議終了→清書（DD-012-2）。確定テキスト(＋人間メモ)を stdin で渡し、gemma で議事録Markdownに
 /// 清書して進捗を summary-* イベントで中継する。モデルは S-08 設定に従う（DD-012-7）。
+///
+/// `meeting_id` があれば、その会議の事前資料（done 添付の抽出本文）を前提資料として清書に統合する
+/// （DD-012-10）。※ ライブ会議が予定(S-02)と紐づく経路は別途配線が必要（下記 DD のログ参照）。
 #[tauri::command]
 fn start_summarize(
     app: AppHandle,
     state: State<'_, SttState>,
     transcript: String,
     title: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     let (batch_model, live_model) = summarize_models(&app);
     let title = title.unwrap_or_default();
+    // 事前資料（DD-012-10）: meeting_id があれば done 添付の本文を一時ファイルに集約して渡す。
+    let materials_path = meeting_id
+        .as_deref()
+        .and_then(|id| write_materials_file(&app, id));
     eprintln!(
-        "[summary] start batch={batch_model} live={live_model} chars={}",
-        transcript.len()
+        "[summary] start batch={batch_model} live={live_model} chars={} materials={}",
+        transcript.len(),
+        materials_path.is_some()
     );
     let mut args: Vec<&str> = vec![
         "run",
@@ -426,6 +465,10 @@ fn start_summarize(
     if !title.is_empty() {
         args.push("--title");
         args.push(title.as_str());
+    }
+    if let Some(ref p) = materials_path {
+        args.push("--materials-file");
+        args.push(p.as_str());
     }
     spawn_and_relay(
         &app,

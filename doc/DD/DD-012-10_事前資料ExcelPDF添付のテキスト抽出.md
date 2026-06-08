@@ -85,16 +85,19 @@
 - [x] 🔬 機械検証: `vue-tsc --noEmit` パス・`cargo build` パス・Playwright で S-02 の資料カード描画を確認（空状態の案内文＋「資料を追加」）。**実ウィンドウでの 添付→解析中→done と本文プレビューは Tauri ランタイム専用 → Phase 5（実機E2E）へ**
 - [x] 😈 DA批判レビュー → 下記 Phase 3 DA
 
-### Phase 4: 清書統合
-- [ ] 清書バッチの入力に `extracted_text`(done) を前提資料として連結（[基本設計書.md](../../doc/spec/基本設計書.md) の入力統合に沿う）
-- [ ] 🔬 機械検証: 資料あり/なしで清書プロンプトに資料節が入る/入らない
-- [ ] 😈 DA批判レビュー
+### Phase 4: 清書統合 ✅（プロンプト統合＋継ぎ目）・**最終起動は予定→ライブ連結待ち**
+- [x] [summarize.py](../../python/src/synchroni_note/pipeline/summarize.py) `build_minutes_prompt(materials=…)`：`done` 抽出本文を**書き起こしの前**に「事前資料」節として連結（空なら節なし）。`summarize`/`stream_summarize` も `materials` を透過
+- [x] [summarize_sidecar.py](../../python/src/synchroni_note/pipeline/summarize_sidecar.py) `--materials-file PATH`：本文を読み `stream_summarize(materials=…)` へ。読込失敗は清書を止めず警告のみ
+- [x] [lib.rs](../../app/src-tauri/src/lib.rs) `start_summarize(meeting_id?)`：`write_materials_file`（当該会議の done 添付の `extracted_text` を「## ファイル名＋本文」で連結→`app_data_dir/summarize_materials.txt`）→ `--materials-file` を付与。[session.ts](../../app/src/session.ts) に `meetingId`、[S06Generating.vue](../../app/src/pages/S06Generating.vue) が `meetingId` を渡す
+- [x] 🔬 機械検証: [test_summarize_materials.py](../../python/tests/test_summarize_materials.py) 3件パス（資料あり→節が書き起こしの前に入る／無し・空白→節なし／title・agenda と共存）。`vue-tsc`・`cargo build` パス
+- [x] 😈 DA批判レビュー → 下記 Phase 4 DA
+- [x] ✅ **活性化＝並行セッションの「予定→ライブ連結」で接続済み**: [S05Realtime.vue](../../app/src/pages/S05Realtime.vue) が `route.query.id`→`linkedMeetingId`→`minutesSession.meetingId` を設定し（予定を開いて録音した場合）、[complete_meeting](../../app/src-tauri/src/db_commands.rs) で予定へ書き戻す縦串が別途実装された。これにより S-06 が `meetingId` を渡し→`start_summarize(meeting_id)`→`write_materials_file`→`--materials-file`→`build_minutes_prompt(materials)` が**端から端まで繋がる**（ad-hoc 録音は `meetingId=null` で従来どおり資料なし）。**実際に資料が清書へ載る一周は Phase 5 実機E2Eで確認**
 
 ## 完了条件（DoD）
 
-- S-02 で Excel/PDF を添付でき、**オフラインで本文抽出**され `extracted_text` に保存される（pending→done/error がUIに出る）。
-- 清書時に抽出本文が**前提資料として反映**される。
-- 会議削除で添付（行・コピーファイル）も整理される。外部送信は一切なし。
+- ✅ S-02 で Excel/PDF を添付でき、**オフラインで本文抽出**され `extracted_text` に保存される（pending→done/error/本文なし がUIに出る）※実機E2EはPhase 5。
+- ✅ 清書時に抽出本文が**前提資料として反映**される → 統合・継ぎ目を実装/テストし、並行実装の「予定→ライブ連結」（`linkedMeetingId`/`complete_meeting`）で end-to-end が接続済み（実機での一周確認は Phase 5）。
+- ✅ 会議削除で添付（行）は CASCADE 整理。外部送信は一切なし。※個別削除はファイルも消す。会議ごと削除時のコピーファイル掃除は既知の制約（Phase 2 DA#8）。
 
 ## ログ
 
@@ -102,6 +105,7 @@
 - 起票（親 DD-012 の子）。ユーザー提案「事前にExcel/PDFを添付→テキスト抽出」を、設計済み未実装の `attachments` 実装として正式化。DD-012-9（S-01操作強化）から分離（性質が解析パイプラインで別物のため）。抽出は完全オフライン（openpyxl / pymupdf 等）。画像PDFのOCR・docx/pptx は対象外（将来）。
 - **Phase 0 完了**: スパイクで openpyxl/pymupdf を実測（xlsx 3.7ms・pdf 7.5ms/枚、日本語・絵文字とも文字化けなし、破損PDFは例外で error 化可、両者オフライン）。**ライブラリ＝openpyxl＋pymupdf に確定**。📐詳細化＝要（上記「Phase 0 設計判断」に extract.py 公開I/F＋sidecar 契約を明記）。DA に実測由来 #5（openpyxl data_only の数式キャッシュ制約）を追記。`python` に `openpyxl`/`pymupdf` を依存追加（pyproject/uv.lock）。
 - **Phase 1 完了**: `extract.py`（純粋な抽出口）＋ sidecar `--extract` モードを実装。pytest 10件パス・ruff クリーン。**テスト時の知見**: pymupdf 既定フォントは CJK 非対応で日本語PDF生成は点字化する→PDFサンプルは ASCII、日本語通過確認は xlsx で担保（実ユーザーのフォント埋め込みPDFは抽出可）。`insert_text` はページ外をクリップ→上限トリム検証は xlsx の長文セルで実施。次＝Phase 2（attachments の Tauri/db 配線）。
+- **Phase 4 完了（実装/テスト）**: `build_minutes_prompt(materials=…)`で抽出本文を「事前資料」節として書き起こし前に連結（空なら節なし）。`summarize_sidecar --materials-file`／`start_summarize(meeting_id?)`＋`write_materials_file`（done非空のみ連結→一時ファイル）／S-06 が `meetingId` を渡す。pytest 3件＋`vue-tsc`/`cargo build`/`cargo test --lib`21件パス。**並行セッションの「予定→ライブ連結」（`linkedMeetingId`/`complete_meeting`）と噛み合い、予定を開いて録音→資料が清書へ載る経路が端まで接続**（実機一周は Phase 5）。当初「活性化は別作業待ち」と書いたが、並行実装で解消。DA #15-18 追記。**並行衝突メモ**: session.ts/S-05 は別セッションが meetingId 連結を実装したため本DDからは触れず（向こうの版を採用）。lib.rs は私の hunk のみ surgical stage（DD-012-5 の speakers 行は巻き込まない）。
 - **Phase 2 完了**: db.rs に `Attachment`＋CRUD（insert/list/update_parse/get_path/delete）、db_commands に `add_attachment`/`list_attachments`/`remove_attachment`、lib.rs に同期抽出ヘルパ `extract_text_blocking`＋command登録、api.ts にラッパー。`cargo test --lib` 21件パス（添付3件追加）。実CLI で結果JSON emit を確認。DA #6-9 追記（抽出中はDBロック非保持／会議削除時のコピーファイル残置は既知の制約として許容）。次＝Phase 3（S-02 取り込みUI／S-03 表示・D&D vs ダイアログの設計判断）。
 
 ---
@@ -144,3 +148,14 @@
 | 12 | **抽出ゼロ(画像PDF)が「完了」に見える** | 中 | 画像PDFを添付 | 抽出品質 | `done` かつ `extracted_text` 空を `isEmptyExtract` で判定し「本文なし（画像PDFの可能性）」をオレンジ表示（S-02）。S-03 は本文プレビューを無効化＋「本文なし」バッジ |
 | 13 | **保存前に追加→キャンセルでゴミが残らないか** | 低 | 新規で資料追加→キャンセル | データ保全 | 新規はコピー/抽出を保存時まで遅延＝キャンセルなら何も書かない（ゴミ行/ファイルなし）。保存待ちは×で個別取消可 |
 | 14 | **実機E2E（ダイアログ→抽出→表示）は Tauri 専用** | 中 | 実ウィンドウで添付 | 検証境界 | Playwright は描画のみ確認。添付の一周は **Phase 5（実機E2E）** でユーザー実機確認 |
+
+### Phase 4 DA（実装後）
+
+**DA観点:** （資料の巨大化／資料読込失敗／資料の選別）
+
+| # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
+|---|-------------------|--------|----------------------|--------|------|
+| 15 | **複数資料の連結で清書プロンプトが膨張** | 中 | done資料を多数添付→清書 | 文脈/性能 | 各資料は抽出時に `EXTRACT_MAX_CHARS` でトリム済み（Phase 1）。`write_materials_file` は done かつ非空のみ連結。将来必要なら合計上限も検討 |
+| 16 | **materials ファイル読込失敗で清書全体が落ちないか** | 中 | materials-file を壊す/消す | 異常系 | `summarize_sidecar` は読込失敗を `OSError` で握り潰し**書き起こしのみで続行**（清書は止めない）。`write_materials_file` も done資料が無ければ None＝引数を付けない |
+| 17 | **error/空(本文なし)資料を清書に混ぜない** | 中 | error/画像PDFを添付→清書 | 入力品質 | `write_materials_file` は `parse_status=='done'` かつ `extracted_text` 非空のみ採用（error・空はスキップ） |
+| 18 | **ad-hoc 録音に資料が無いのに資料節が出ないか** | 低 | 予定を開かず録音→清書 | 整合 | `meetingId=null` のとき materials なし＝資料節なし（`build_minutes_prompt` は空 materials で節を出さない）。テストで固定 |

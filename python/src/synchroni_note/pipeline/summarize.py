@@ -27,8 +27,13 @@ def build_minutes_prompt(
     title: str = "",
     agenda: str = "",
     vocab: Iterable[str] | None = None,
+    materials: str = "",
 ) -> str:
-    """議事録生成用のプロンプトを組み立てる（純関数）。"""
+    """議事録生成用のプロンプトを組み立てる（純関数）。
+
+    ``materials``＝事前資料（Excel/PDF からオフライン抽出した本文・DD-012-10）。指定時は
+    書き起こしの**前**に「事前資料」節として連結し、清書の文脈精度を上げる。空なら節は出さない。
+    """
     ctx_lines: list[str] = []
     if title:
         ctx_lines.append(f"- 会議名: {title}")
@@ -39,7 +44,8 @@ def build_minutes_prompt(
         if terms:
             ctx_lines.append(f"- 専門用語: {terms}")
     context = ("# 前提\n" + "\n".join(ctx_lines) + "\n\n") if ctx_lines else ""
-    return f"{MINUTES_INSTRUCTION}\n{context}--- 書き起こし ---\n{transcript}\n"
+    materials_block = f"--- 事前資料 ---\n{materials.strip()}\n\n" if materials.strip() else ""
+    return f"{MINUTES_INSTRUCTION}\n{context}{materials_block}--- 書き起こし ---\n{transcript}\n"
 
 
 def summarize(
@@ -49,10 +55,13 @@ def summarize(
     title: str = "",
     agenda: str = "",
     vocab: Iterable[str] | None = None,
+    materials: str = "",
     think: bool = False,
 ) -> str:
     """書き起こしから議事録Markdownを生成して返す。"""
-    prompt = build_minutes_prompt(transcript, title=title, agenda=agenda, vocab=vocab)
+    prompt = build_minutes_prompt(
+        transcript, title=title, agenda=agenda, vocab=vocab, materials=materials
+    )
     response = ollama.generate(model=model, prompt=prompt, think=think)
     return response.response.strip()
 
@@ -64,6 +73,7 @@ def stream_summarize(
     title: str = "",
     agenda: str = "",
     vocab: Iterable[str] | None = None,
+    materials: str = "",
     think: bool = False,
 ) -> Iterator[tuple[str, dict | None]]:
     """議事録をストリーミング生成する。
@@ -71,7 +81,9 @@ def stream_summarize(
     生成中は (これまでの累積テキスト, None) を逐次返し、最後のチャンクで
     (全文, メトリクス辞書) を返す。メトリクス: input_tokens / output_tokens / eval_s。
     """
-    prompt = build_minutes_prompt(transcript, title=title, agenda=agenda, vocab=vocab)
+    prompt = build_minutes_prompt(
+        transcript, title=title, agenda=agenda, vocab=vocab, materials=materials
+    )
     acc = ""
     for chunk in ollama.generate(model=model, prompt=prompt, stream=True, think=think):
         acc += chunk.response or ""
