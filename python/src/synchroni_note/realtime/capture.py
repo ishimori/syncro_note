@@ -53,9 +53,12 @@ class VadChunker:
         sr: int = SAMPLE_RATE,
         frame_ms: int = 30,
         abs_floor: float = 0.004,
-        silence_ms: int = 400,
+        # DD-010-2 P2: 静かな部屋向け実測で 400→300（自然な無音区切りを最大化）
+        silence_ms: int = 300,
         min_speech_s: float = 2.0,
         max_seg_s: float = 10.0,
+        search_floor_s: float = 7.0,
+        valley_ratio: float = 0.5,
     ) -> None:
         self.sr = sr
         self.frame_len = int(frame_ms * sr / 1000)
@@ -63,6 +66,11 @@ class VadChunker:
         self.silence_frames = max(1, math.ceil(silence_ms / frame_ms))
         self.min_speech_frames = max(1, math.ceil(min_speech_s * 1000 / frame_ms))
         self.max_seg_samples = int(max_seg_s * sr)
+        # DD-010-2: 強制カット時に最静点を探す窓 [search_floor, max_seg] と「谷」判定の深さ比。
+        self.valley_ratio = valley_ratio
+        self.search_floor_samples = min(
+            int(search_floor_s * sr), max(0, self.max_seg_samples - self.frame_len)
+        )
         self._buf = np.empty(0, dtype=np.float32)
         self._consumed = 0  # これまでに emit 済みのサンプル数（t_start 算出用）
         self._seq = 0
@@ -104,7 +112,7 @@ class VadChunker:
         if sc is not None:
             candidates.append(sc)
         if len(self._buf) >= self.max_seg_samples:
-            candidates.append(self.max_seg_samples)
+            candidates.append(self._quietest_cut())
         return min(candidates) if candidates else None
 
     def _silence_cut(self) -> int | None:
@@ -130,6 +138,23 @@ class VadChunker:
                     return mid_frame * self.frame_len
                 i = j
         return None
+
+    def _quietest_cut(self) -> int:
+        """強制カット位置。探索窓 [search_floor, max_seg] 内で最も静かなフレーム境界を返す。
+
+        無音(`_silence_cut`)が取れないまま max_seg に達した時に呼ばれる。10秒ちょうどの機械的な
+        カットで単語の途中を割るのを避け、窓内の「音の谷」（息継ぎ・音節の切れ目）で切る。
+        谷が十分深くない（ほぼ一様）なら従来どおり max_seg で切る（安全弁, DD-010-2 B2/B3）。
+        """
+        lo, hi = self.search_floor_samples, self.max_seg_samples
+        rms = frame_rms(self._buf[lo:hi], self.frame_len)
+        if rms.size == 0:
+            return hi
+        i_min = int(np.argmin(rms))
+        med = float(np.median(rms))
+        if med <= 0 or float(rms[i_min]) >= self.valley_ratio * med:
+            return hi  # 谷が浅い＝ほぼ一様 → 従来どおり強制カット
+        return lo + i_min * self.frame_len + self.frame_len // 2
 
     def _emit(self, cut: int) -> Chunk:
         samples = self._buf[:cut].copy()

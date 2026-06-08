@@ -56,3 +56,33 @@ def test_feed_samples_preserves_voiced_tail() -> None:
     audio = np.concatenate([_voiced(2.5), _silence(0.6), _voiced(1.0)])
     chunks = feed_samples(audio, chunker, block_ms=100)
     assert sum(len(c.samples) for c in chunks) == len(audio)
+
+
+# --- DD-010-2 Phase 1: 強制カットの最静点化（scenarios.md B群） ---
+
+
+def test_force_cut_prefers_quietest_point() -> None:
+    # B1: 無音(0)は無いが途中に「音の谷」(amp 0.02)。10sちょうどでなく谷の近傍(≒8.15s)で切る
+    chunker = VadChunker()
+    audio = np.concatenate([_voiced(8.0, 0.1), _voiced(0.3, 0.02), _voiced(8.0, 0.1)])
+    emitted = chunker.push(audio)
+    assert len(emitted) >= 1
+    assert 7.5 < emitted[0].duration_s < 9.0  # 谷(8.0〜8.3s)近傍。10sではない
+
+
+def test_force_cut_ignores_shallow_dip() -> None:
+    # B3: 浅い揺らぎ(0.095 vs 0.1)は谷とみなさず従来どおり10sで切る（安全弁）
+    chunker = VadChunker()
+    audio = np.concatenate([_voiced(8.0, 0.1), _voiced(0.3, 0.095), _voiced(8.0, 0.1)])
+    emitted = chunker.push(audio)
+    assert len(emitted) >= 1
+    assert 9.9 < emitted[0].duration_s <= 10.01  # フォールバック = max_seg
+
+
+def test_real_silence_takes_priority_over_quiet_point() -> None:
+    # B4: 本物の無音(0)区切りが谷より優先される
+    chunker = VadChunker()
+    audio = np.concatenate([_voiced(3.0, 0.1), _silence(0.6), _voiced(8.0, 0.1)])
+    emitted = chunker.push(audio)
+    assert len(emitted) >= 1
+    assert 3.0 < emitted[0].duration_s < 3.7  # 無音中点 ≒3.3s
