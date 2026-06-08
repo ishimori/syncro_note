@@ -163,6 +163,67 @@ def _run_realtime(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_level(args: argparse.Namespace) -> int:
+    """入力レベル(RMS)のみを ~100ms ごとに emit する（S-04 プリフライト・whisper 不使用）。
+
+    ``--simulate`` 指定時はファイルを実時間ペースで給電（実マイク不要の検証）。stdin で stop 可。
+    """
+    import numpy as np
+
+    from synchroni_note.realtime.capture import SAMPLE_RATE
+
+    block = max(1, int(0.1 * SAMPLE_RATE))
+
+    def rms(buf: "np.ndarray") -> float:
+        return float(np.sqrt(np.mean(buf.astype(np.float64) ** 2))) if buf.size else 0.0
+
+    emit({"type": "meta", "mode": "level"})
+    stop_event = threading.Event()
+    _start_stdin_control(stop_event, threading.Event())
+    try:
+        if args.simulate is not None:
+            from faster_whisper.audio import decode_audio
+
+            audio = decode_audio(str(args.simulate), sampling_rate=SAMPLE_RATE)
+            for i in range(0, len(audio), block):
+                if stop_event.is_set():
+                    break
+                emit({"type": "level", "rms": round(rms(audio[i : i + block]), 4)})
+                time.sleep(0.1)  # 実時間ペースで流す
+        else:
+            import queue
+
+            import sounddevice as sd
+
+            q: queue.Queue = queue.Queue()
+
+            def _cb(indata, _frames, _time, status) -> None:  # noqa: ANN001  sd 既定シグネチャ
+                if status:
+                    print(f"[level] {status}", file=sys.stderr, flush=True)
+                q.put(indata[:, 0].copy())
+
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                blocksize=block,
+                device=args.device,
+                callback=_cb,
+            ):
+                while not stop_event.is_set():
+                    try:
+                        buf = q.get(timeout=0.3)
+                    except queue.Empty:
+                        continue
+                    emit({"type": "level", "rms": round(rms(buf), 4)})
+        emit({"type": "done", "count": 0, "elapsed_s": 0.0})
+    except Exception as e:  # noqa: BLE001
+        emit({"type": "error", "message": str(e), "where": "level"})
+        print(f"[sidecar] {e!r}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows の cp932 端末でも日本語を出力できるよう UTF-8 に再構成する（cli.py と同じ手当て）。
     if hasattr(sys.stdout, "reconfigure"):
@@ -176,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         "audio", type=Path, nargs="?", default=None, help="入力音声(.wav)・ファイル一括"
     )
     parser.add_argument("--mic", action="store_true", help="実マイクからライブ収音")
+    parser.add_argument("--level", action="store_true", help="入力レベル(RMS)のみemit(S-04)")
     parser.add_argument(
         "--simulate", type=Path, default=None, help="ファイルをmic代替で流す(テスト)"
     )
@@ -187,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.level:
+            return _run_level(args)
         if args.mic or args.simulate is not None:
             return _run_realtime(args)
         if args.audio is not None:

@@ -100,6 +100,7 @@ fn spawn_and_relay(
                         Some("segment") => "stt-segment",
                         Some("done") => "stt-done",
                         Some("error") => "stt-error",
+                        Some("level") => "stt-level", // S-04 入力レベル（DD-012-8）
                         _ => continue,
                     };
                     eprintln!("[stt] emit {ev}"); // 検証用ログ
@@ -220,6 +221,23 @@ fn stop_mic(state: State<'_, SttState>) -> Result<(), String> {
     write_ctrl(state.inner(), "stop")
 }
 
+/// マイク入力レベル(RMS)のみを流す軽量サイドカー（S-04 プリフライト・DD-012-8）。
+/// whisper は載せない。`simulate` 指定時はファイル給電（dev/テスト）。停止は `stop_mic`（stdin stop）。
+#[tauri::command]
+fn start_level(
+    app: AppHandle,
+    state: State<'_, SttState>,
+    simulate: Option<String>,
+) -> Result<(), String> {
+    let mut args: Vec<&str> =
+        vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar", "--level"];
+    if let Some(path) = simulate.as_deref() {
+        args.push("--simulate");
+        args.push(path);
+    }
+    spawn_and_relay(&app, state.inner(), &args, true)
+}
+
 /// セッションのプロセスツリーを終了する（uv とその孫 python/whisper を一掃）。
 ///
 /// Windows では `uv`(子) を kill しても `python`/whisper(孫) が残りうる（DA-新4）。
@@ -275,6 +293,7 @@ pub fn run() {
             pause_mic,
             resume_mic,
             stop_mic,
+            start_level,
             db_commands::list_meetings,
             db_commands::create_meeting,
             db_commands::get_meeting_detail,

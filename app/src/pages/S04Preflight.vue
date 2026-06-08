@@ -1,31 +1,86 @@
 <script setup lang="ts">
-// S-04 会議開始の準備（プリフライト）— Phase 2: 静的骨格（見た目＋ローカル操作のみ）。
-// 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-04_preflight.html。
-// 無音録音・モデル未ロードの事故を防ぐ「開始前チェック」を反映。
-// 実マイク取得・モデルロード（Python/Tauri）との接続は Phase 3 で行う。
+// S-04 会議開始の準備（プリフライト）。DD-012-8 で実データ化。
+// 正＝設計SSOT doc/spec/画面設計書.md §S-04（入力レベル・無音時は録音開始を抑止・既定は app_settings）。
+// 入力レベルは軽量サイドカー(--level)の実測RMSを stt-level イベントで受ける。実マイク確認は実ウィンドウ。
 import { ref, onMounted, onUnmounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 
+// app_settings の必要フィールド（DD-012-7）
+interface AppSettings {
+  mic_device: string | null;
+  stt_model: string | null;
+  whisper_n_threads: number | null;
+  live_model: string | null;
+  use_llm_live: boolean;
+}
+interface LevelEvent {
+  rms: number;
+}
+
 const router = useRouter();
-
 const leftDrawer = ref(true);
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// マイク（実デバイス列挙は別DD。当面は設定の既定 or 固定候補）
 const mics: string[] = ["既定 - マイク配列 (Realtek)", "USB会議マイク", "ヘッドセット"];
 const mic = ref<string>(mics[0]);
 const useLlm = ref(true);
 
-// 入力レベルメーター（見た目のみのダミーアニメーション）。Phase 3 で実音声に差し替え。
-const level = ref(20);
-let levelTimer: ReturnType<typeof setInterval> | undefined;
-onMounted(() => {
-  levelTimer = setInterval(() => {
-    level.value = 15 + Math.round(Math.random() * 70);
-  }, 400);
+// モデル表示（S-08 設定の実値を反映）
+const sttModel = ref("whisper base");
+const sttThreads = ref(4);
+const liveModel = ref("qwen3:8b");
+
+// 入力レベル（実測 RMS → 0-100 表示）と無音ガード
+const level = ref(0);
+const detected = ref(false); // 直近に入力ありか（無音時は録音開始を抑止＝事故防止）
+const SILENCE_RMS = 0.015; // これ未満は無音扱い（暗騒音を弾く小さめ閾値・つまみ）
+let lastVoiceAt = 0;
+
+const unlisteners: UnlistenFn[] = [];
+
+onMounted(async () => {
+  if (!isTauri) return;
+  // 既定を app_settings から反映
+  try {
+    const s = await invoke<AppSettings>("get_settings");
+    if (s.mic_device) mic.value = s.mic_device;
+    if (s.stt_model) sttModel.value = s.stt_model;
+    if (s.whisper_n_threads != null) sttThreads.value = s.whisper_n_threads;
+    if (s.live_model) liveModel.value = s.live_model;
+    useLlm.value = s.use_llm_live;
+  } catch {
+    /* 読めなければ既定表示のまま */
+  }
+  // 入力レベル購読 → メータ＋無音ガード
+  unlisteners.push(
+    await listen<LevelEvent>("stt-level", (e) => {
+      const rms = e.payload.rms;
+      level.value = Math.min(100, Math.round(rms * 800));
+      if (rms >= SILENCE_RMS) lastVoiceAt = Date.now();
+      detected.value = Date.now() - lastVoiceAt < 1500;
+    }),
+  );
+  // レベル計測サイドカーを起動（実マイク）
+  try {
+    await invoke("start_level", { simulate: null });
+  } catch {
+    /* マイク無し等は無音ガードで録音開始が抑止される */
+  }
 });
+
 onUnmounted(() => {
-  if (levelTimer !== undefined) clearInterval(levelTimer);
+  unlisteners.forEach((u) => u());
+  if (isTauri) void invoke("stop_mic").catch(() => undefined);
 });
+
+const startRecording = (): void => {
+  if (isTauri) void invoke("stop_mic").catch(() => undefined); // level を止めてから録音へ
+  router.push("/s05");
+};
 </script>
 
 <template>
@@ -73,8 +128,15 @@ onUnmounted(() => {
               <div class="meter"><div :style="{ width: level + '%' }" /></div>
             </div>
             <q-item dense class="q-pa-none">
-              <q-item-section avatar><q-icon name="check_circle" color="green-6" /></q-item-section>
-              <q-item-section>16kHz / モノラル / f32 で取得可能</q-item-section>
+              <q-item-section avatar>
+                <q-icon
+                  :name="detected ? 'check_circle' : 'warning'"
+                  :color="detected ? 'green-6' : 'amber-7'"
+                />
+              </q-item-section>
+              <q-item-section>
+                {{ detected ? "入力を検出（録音できます）" : "マイク入力が検出できません（話すとバーが動きます）" }}
+              </q-item-section>
             </q-item>
           </q-card-section>
         </q-card>
@@ -92,15 +154,15 @@ onUnmounted(() => {
               <q-item-section avatar><q-icon name="record_voice_over" color="primary" /></q-item-section>
               <q-item-section>
                 <q-item-label>文字起こし（STT）</q-item-label>
-                <q-item-label caption>whisper base（CPU, n_threads=4）</q-item-label>
+                <q-item-label caption>{{ sttModel }}（CPU, n_threads={{ sttThreads }}）</q-item-label>
               </q-item-section>
-              <q-item-section side><q-badge color="green-6" label="ロード済" /></q-item-section>
+              <q-item-section side><q-badge color="blue-grey-5" label="設定値" /></q-item-section>
             </q-item>
             <q-item>
               <q-item-section avatar><q-icon name="auto_fix_high" color="primary" /></q-item-section>
               <q-item-section>
                 <q-item-label>リアルタイム整形（任意）</q-item-label>
-                <q-item-label caption>qwen3:8b（追い上げレイヤ）</q-item-label>
+                <q-item-label caption>{{ liveModel }}（追い上げレイヤ）</q-item-label>
               </q-item-section>
               <q-item-section side><q-toggle v-model="useLlm" color="primary" /></q-item-section>
             </q-item>
@@ -115,8 +177,11 @@ onUnmounted(() => {
             color="red-6"
             icon="fiber_manual_record"
             label="録音開始"
-            @click="router.push('/s05')"
-          />
+            :disable="isTauri && !detected"
+            @click="startRecording"
+          >
+            <q-tooltip v-if="isTauri && !detected">マイク入力を検出してから開始できます</q-tooltip>
+          </q-btn>
         </div>
       </q-page>
     </q-page-container>
