@@ -57,9 +57,12 @@ export interface MeetingDetail {
 export const listMeetings = (year: number, month: number): Promise<Meeting[]> =>
   invoke<Meeting[]>("list_meetings", { year, month });
 
-/** 会議＋参加者を保存。id・各時刻は呼び出し側で確定して渡す。 */
-export const createMeeting = (meeting: Meeting, participants: Participant[]): Promise<void> =>
-  invoke<void>("create_meeting", { meeting, participants });
+/** 会議＋参加者＋（任意で）元タイムラインを保存。id・各時刻は呼び出し側で確定して渡す。 */
+export const createMeeting = (
+  meeting: Meeting,
+  participants: Participant[],
+  timeline: TimelineElement[] = [],
+): Promise<void> => invoke<void>("create_meeting", { meeting, participants, timeline });
 
 /** 会議1件の詳細（本体＋参加者＋タイムライン）。無ければ null。 */
 export const getMeetingDetail = (id: string): Promise<MeetingDetail | null> =>

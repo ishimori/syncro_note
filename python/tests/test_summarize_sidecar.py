@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synchroni_note.pipeline.summarize_sidecar import stream_to_events
+from synchroni_note.pipeline.summarize_sidecar import normalize_minutes, stream_to_events
 
 
 def test_progress_sends_only_delta_then_done_full() -> None:
@@ -40,3 +40,19 @@ def test_empty_delta_is_skipped() -> None:
         {"type": "summary-progress", "delta": "a", "chars": 1},
         {"type": "summary-progress", "delta": "b", "chars": 2},
     ]
+
+
+def test_normalize_minutes_unescapes_literal_control_chars() -> None:
+    # gemma がまれに出す literal な \n / \t を実際の制御文字へ直す（Phase 1 DA#2）。
+    assert normalize_minutes("## 要約\\n- a\\n- b") == "## 要約\n- a\n- b"
+    assert normalize_minutes("col1\\tcol2") == "col1\tcol2"
+    assert normalize_minutes("行1\\r\\n行2") == "行1\n行2"
+    # 既に実改行のものは変えない（二重変換しない）。
+    assert normalize_minutes("## 要約\n- a") == "## 要約\n- a"
+
+
+def test_done_markdown_is_normalized() -> None:
+    # summary-done の markdown は正規化済みで届く（S-07 が保存・表示する値）。
+    stream = [("## 要約\\n- 決定", {"input_tokens": 3, "output_tokens": 4, "eval_s": 1.0})]
+    (done,) = list(stream_to_events(stream))
+    assert done["markdown"] == "## 要約\n- 決定"

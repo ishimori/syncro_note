@@ -44,16 +44,57 @@ fn repo_python_dir() -> Result<PathBuf, String> {
         .map_err(|e| format!("python ディレクトリが見つかりません({}): {e}", dir.display()))
 }
 
-/// サイドカー(uv → python -m …sidecar)を起動し、stdout(JSON Lines)を Tauri イベントへ中継する。
+/// サイドカーが流す JSON Lines を、どの Tauri イベント名へ中継するかの系統。
+/// STT（文字起こし）と Summary（清書・DD-012-2）で名前空間を分ける。
+#[derive(Clone, Copy)]
+enum Relay {
+    Stt,
+    Summary,
+}
+
+/// 1行=1JSON の `type` を、系統ごとの Tauri イベント名へ対応づける（未知は None で捨てる）。
+fn relay_event(relay: Relay, ty: Option<&str>) -> Option<&'static str> {
+    match relay {
+        Relay::Stt => match ty {
+            Some("meta") => Some("stt-meta"),
+            Some("segment") => Some("stt-segment"),
+            Some("done") => Some("stt-done"),
+            Some("error") => Some("stt-error"),
+            Some("level") => Some("stt-level"), // S-04 入力レベル（DD-012-8）
+            _ => None,
+        },
+        Relay::Summary => match ty {
+            Some("summary-meta") => Some("summary-meta"),
+            Some("summary-status") => Some("summary-status"),
+            Some("summary-progress") => Some("summary-progress"),
+            Some("summary-done") => Some("summary-done"),
+            Some("error") => Some("summary-error"), // 清書の異常（stt-error とは別名）
+            _ => None,
+        },
+    }
+}
+
+/// 子プロセスの stdin の扱い。
+enum StdinMode {
+    /// stdin 不要（ファイル文字起こし）。
+    None,
+    /// 開いたまま保持し、pause/resume/stop を書き込む（マイク・レベル計測）。
+    Control,
+    /// 起動直後に一括投入して即クローズ（EOF 通知）。清書の確定テキスト入力（DD-012-2）。
+    Feed(String),
+}
+
+/// サイドカー(uv → python -m …)を起動し、stdout(JSON Lines)を Tauri イベントへ中継する。
 ///
-/// 既存セッションがあれば先に kill（マイクの起動しっぱなし防止）。`want_stdin` 時は子の stdin を
-/// パイプ・保持してマイクの pause/resume/stop 制御に使う。reader スレッドで即時 return。
-/// 1行=1JSON を `type` で振り分け `stt-meta`/`stt-segment`/`stt-done`/`stt-error` を emit。
+/// 既存セッションがあれば先に kill（起動しっぱなし防止）。`stdin_mode` で stdin の扱いを切替える
+/// （保持して制御 / 一括投入して EOF / 不要）。`relay` で emit するイベント名の系統（stt-* /
+/// summary-*）を選ぶ。reader スレッドで即時 return。
 fn spawn_and_relay(
     app: &AppHandle,
     state: &SttState,
     args: &[&str],
-    want_stdin: bool,
+    relay: Relay,
+    stdin_mode: StdinMode,
 ) -> Result<(), String> {
     // 進行中セッションがあれば先に終了（start→start での取り残し防止）。
     let prev = state.0.lock().unwrap().take();
@@ -68,7 +109,7 @@ fn spawn_and_relay(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if want_stdin {
+    if !matches!(stdin_mode, StdinMode::None) {
         cmd.stdin(Stdio::piped());
     }
     #[cfg(windows)]
@@ -80,7 +121,22 @@ fn spawn_and_relay(
 
     let out = BufReader::new(child.stdout.take().ok_or("stdout を取得できません")?);
     let err = BufReader::new(child.stderr.take().ok_or("stderr を取得できません")?);
-    let stdin = child.stdin.take(); // want_stdin の時のみ Some
+    let child_stdin = child.stdin.take(); // piped 指定時のみ Some
+
+    // stdin: 制御用に保持 or 確定テキストを一括投入して即クローズ（EOF＝python の read() が返る）。
+    let keep_stdin = match stdin_mode {
+        StdinMode::Feed(input) => {
+            if let Some(mut si) = child_stdin {
+                si.write_all(input.as_bytes())
+                    .and_then(|_| si.flush())
+                    .map_err(|e| format!("清書入力の送信に失敗: {e}"))?;
+                // si はここで drop され EOF 通知。python は stdin を全読みしてから処理を始める。
+            }
+            None
+        }
+        StdinMode::Control => child_stdin, // マイク/レベル: 制御のため保持
+        StdinMode::None => None,
+    };
     let app2 = app.clone();
 
     // stderr は別スレッドでログへ（JSON に混ぜない＝DA-新3）
@@ -95,24 +151,21 @@ fn spawn_and_relay(
         for line in out.lines().map_while(Result::ok) {
             match serde_json::from_str::<Value>(&line) {
                 Ok(v) => {
-                    let ev = match v["type"].as_str() {
-                        Some("meta") => "stt-meta",
-                        Some("segment") => "stt-segment",
-                        Some("done") => "stt-done",
-                        Some("error") => "stt-error",
-                        Some("level") => "stt-level", // S-04 入力レベル（DD-012-8）
-                        _ => continue,
-                    };
-                    eprintln!("[stt] emit {ev}"); // 検証用ログ
-                    let _ = app2.emit(ev, v);
+                    if let Some(ev) = relay_event(relay, v["type"].as_str()) {
+                        eprintln!("[relay] emit {ev}"); // 検証用ログ
+                        let _ = app2.emit(ev, v);
+                    }
                 }
-                Err(_) => eprintln!("[stt] non-json: {line}"), // 捨てずログ（DA-新3）
+                Err(_) => eprintln!("[relay] non-json: {line}"), // 捨てずログ（DA-新3）
             }
         }
-        eprintln!("[stt] stdout closed (sidecar finished)");
+        eprintln!("[relay] stdout closed (sidecar finished)");
     });
 
-    *state.0.lock().unwrap() = Some(SttSession { child, stdin });
+    *state.0.lock().unwrap() = Some(SttSession {
+        child,
+        stdin: keep_stdin,
+    });
     Ok(())
 }
 
@@ -163,7 +216,7 @@ fn start_transcription(
         "--threads",
         threads.as_str(),
     ];
-    spawn_and_relay(&app, state.inner(), &args, false)
+    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::None)
 }
 
 /// マイクからライブ文字起こし（DD-012-1）。`simulate` 指定時はファイルを mic 代替で流す（dev/テスト）。
@@ -191,7 +244,7 @@ fn start_mic(
     args.push(model.as_str());
     args.push("--threads");
     args.push(threads.as_str());
-    spawn_and_relay(&app, state.inner(), &args, true)
+    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
 }
 
 /// マイクセッションの stdin に制御コマンド（pause/resume/stop）を1行書く。
@@ -235,7 +288,69 @@ fn start_level(
         args.push("--simulate");
         args.push(path);
     }
-    spawn_and_relay(&app, state.inner(), &args, true)
+    spawn_and_relay(&app, state.inner(), &args, Relay::Stt, StdinMode::Control)
+}
+
+/// 清書(batch)/退避(live)モデル名を設定から読む（DD-012-7）。未設定なら既定へ fallback。
+fn summarize_models(app: &AppHandle) -> (String, String) {
+    let fallback = ("gemma4:26b".to_string(), "qwen3:8b".to_string());
+    let state = app.state::<db_commands::DbState>();
+    let Ok(conn) = state.0.lock() else {
+        return fallback;
+    };
+    match db::get_settings(&conn) {
+        Ok(s) => (
+            s.batch_model.filter(|m| !m.is_empty()).unwrap_or(fallback.0),
+            s.live_model.filter(|m| !m.is_empty()).unwrap_or(fallback.1),
+        ),
+        Err(_) => fallback,
+    }
+}
+
+/// 会議終了→清書（DD-012-2）。確定テキスト(＋人間メモ)を stdin で渡し、gemma で議事録Markdownに
+/// 清書して進捗を summary-* イベントで中継する。モデルは S-08 設定に従う（DD-012-7）。
+#[tauri::command]
+fn start_summarize(
+    app: AppHandle,
+    state: State<'_, SttState>,
+    transcript: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let (batch_model, live_model) = summarize_models(&app);
+    let title = title.unwrap_or_default();
+    eprintln!(
+        "[summary] start batch={batch_model} live={live_model} chars={}",
+        transcript.len()
+    );
+    let mut args: Vec<&str> = vec![
+        "run",
+        "python",
+        "-m",
+        "synchroni_note.pipeline.summarize_sidecar",
+        "-", // 確定テキストは stdin から受け取る
+        "--model",
+        batch_model.as_str(),
+        "--live-model",
+        live_model.as_str(),
+    ];
+    if !title.is_empty() {
+        args.push("--title");
+        args.push(title.as_str());
+    }
+    spawn_and_relay(
+        &app,
+        state.inner(),
+        &args,
+        Relay::Summary,
+        StdinMode::Feed(transcript),
+    )
+}
+
+/// 清書を中断する（S-06 の「中断」）。実行中サイドカーをツリーごと終了する。
+#[tauri::command]
+fn abort_summarize(app: AppHandle) -> Result<(), String> {
+    kill_sidecar(&app);
+    Ok(())
 }
 
 /// セッションのプロセスツリーを終了する（uv とその孫 python/whisper を一掃）。
@@ -294,6 +409,8 @@ pub fn run() {
             resume_mic,
             stop_mic,
             start_level,
+            start_summarize,
+            abort_summarize,
             db_commands::list_meetings,
             db_commands::create_meeting,
             db_commands::get_meeting_detail,

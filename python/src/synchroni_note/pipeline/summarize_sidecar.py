@@ -30,6 +30,15 @@ def emit(obj: dict[str, object]) -> None:
     print(json.dumps({"v": 1, **obj}, ensure_ascii=False), flush=True)
 
 
+def normalize_minutes(text: str) -> str:
+    r"""LLM がまれに出力する literal な ``\n``/``\t``（バックスラッシュ＋文字）を実際の
+    改行・タブへ直す（Phase 1 DA#2: gemma が議事録に ``\n`` 文字列を混ぜることがある）。
+
+    全文（``summary-done`` の markdown）に対して一括適用するため、delta 境界で
+    バックスラッシュと ``n`` が分かれても取りこぼさない。"""
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
+
 def stream_to_events(
     stream: Iterable[tuple[str, dict | None]],
 ) -> Iterator[dict[str, object]]:
@@ -49,7 +58,7 @@ def stream_to_events(
         else:
             yield {
                 "type": "summary-done",
-                "markdown": acc,
+                "markdown": normalize_minutes(acc),
                 "input_tokens": int(metrics.get("input_tokens", 0)),
                 "output_tokens": int(metrics.get("output_tokens", 0)),
                 "eval_s": round(float(metrics.get("eval_s", 0.0)), 3),

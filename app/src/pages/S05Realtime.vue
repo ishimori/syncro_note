@@ -8,7 +8,10 @@
 import { ref, reactive, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
+import { localIso } from "../api";
+import { minutesSession } from "../session";
 
 interface AiSeg {
   type: "ai";
@@ -156,6 +159,59 @@ const sendMemo = (): void => {
   }
 };
 
+const router = useRouter();
+const ending = ref(false);
+
+// 確定タイムライン＋人間メモを清書用テキストに整形する（メモは明示ラベルで残す）。
+const buildTranscript = (): string =>
+  timeline
+    .map((x) => (x.type === "memo" ? `【メモ】${x.text}` : x.text))
+    .join("\n")
+    .trim();
+
+// "mm:ss" → ミリ秒（証跡 timeline の t_ms 用）。壊れていれば 0。
+const clockToMs = (t: string): number => {
+  const p = t.split(":").map((n) => parseInt(n, 10));
+  if (p.length === 2 && p.every((n) => !Number.isNaN(n))) return (p[0] * 60 + p[1]) * 1000;
+  return 0;
+};
+
+// 「会議を終了」: 録音を止め、清書元テキストと会議名を清書(S-06)へ渡す（DB作成は保存時=S-07）。
+const endMeeting = async (): Promise<void> => {
+  if (!isTauri || ending.value) return;
+  ending.value = true; // 二重起動防止（stop_mic 待ちの間の再クリックを弾く）
+  // 録音中/一時停止中なら停止（done を待たず楽観的に進む）。
+  if (status.value === "recording" || status.value === "paused") {
+    try {
+      await invoke("stop_mic");
+    } catch {
+      /* 停止失敗でも清書は続行（サイドカーは清書spawn時にkillされる） */
+    }
+  }
+  const transcript = buildTranscript();
+  if (!transcript) {
+    status.value = "error";
+    errorMsg.value = "文字起こしがありません（先に録音してください）";
+    ending.value = false;
+    return;
+  }
+  // 会議はまだDBに作らない（保存するまで未保存の「生成中」を残さない）。
+  // 清書元と会議名だけ次画面へ渡し、実際の作成は S-07 の保存時に行う。
+  minutesSession.title = `録音メモ ${localIso().slice(5, 16).replace("T", " ")}`; // 例: 録音メモ 06-08 14:30
+  minutesSession.transcript = transcript;
+  // 証跡（元タイムライン）も構造化して持ち回り、保存時に timeline_elements へ書き込む。
+  minutesSession.timeline = timeline.map((x) => ({
+    kind: x.type === "memo" ? ("human_memo" as const) : ("ai_transcription" as const),
+    speakerId: null, // 話者分離は未実装
+    tMs: clockToMs(x.t),
+    text: x.text,
+  }));
+  minutesSession.finalMarkdown = "";
+  minutesSession.batchModel = null;
+  minutesSession.generationSeconds = null;
+  router.push("/s06");
+};
+
 // Tauri イベントの購読/解除（実ウィンドウのみ）。
 const unlisteners: UnlistenFn[] = [];
 onMounted(async () => {
@@ -218,7 +274,19 @@ onUnmounted(() => {
           <q-tooltip>整形バックログ（主役の確定表示は0遅延）</q-tooltip>
         </q-chip>
         <q-chip dense color="grey-4" text-color="dark" icon="warning" :label="'drop ' + drops" />
-        <q-btn unelevated no-caps color="red-6" icon="stop" label="会議を終了" class="q-ml-md" />
+        <q-btn
+          unelevated
+          no-caps
+          color="red-6"
+          icon="stop"
+          label="会議を終了"
+          class="q-ml-md"
+          :disable="!isTauri || ending || timeline.length === 0"
+          @click="endMeeting"
+        >
+          <q-tooltip v-if="!isTauri">実ウィンドウ（Tauri）でのみ実行できます</q-tooltip>
+          <q-tooltip v-else-if="timeline.length === 0">先に録音して文字起こしを作成してください</q-tooltip>
+        </q-btn>
       </q-toolbar>
       <q-bar class="bg-indigo-2 text-indigo-10" v-if="bypass">
         <q-icon name="bolt" /> 処理が詰まったため LLM整形をバイパス中（生テキストを優先表示）

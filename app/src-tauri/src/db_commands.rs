@@ -67,12 +67,19 @@ pub fn create_meeting(
     state: State<'_, DbState>,
     meeting: Meeting,
     participants: Vec<Participant>,
+    timeline: Vec<TimelineElement>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    map_err(db::insert_meeting(&conn, &meeting))?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    // meeting→participants→timeline を1トランザクションで（途中失敗で半端な行を残さない）。
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    map_err(db::insert_meeting(&tx, &meeting))?;
     for p in &participants {
-        map_err(db::insert_participant(&conn, p))?;
+        map_err(db::insert_participant(&tx, p))?;
     }
+    for e in &timeline {
+        map_err(db::insert_timeline_element(&tx, e))?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
