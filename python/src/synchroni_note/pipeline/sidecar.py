@@ -43,8 +43,28 @@ def emit(obj: dict[str, object]) -> None:
     print(json.dumps({"v": 1, **obj}, ensure_ascii=False), flush=True)
 
 
+def _diarize_file(args: argparse.Namespace):  # noqa: ANN201  list[Turn]（遅延importのため無注記）
+    """ファイル全体を一度だけ話者分離して Turn 列を返す（会議後一括ラベリング・DD-012-5）。
+
+    失敗（モデル未配置・デコード不可など）は stderr に出して空リストを返し、文字起こしは止めない。
+    """
+    if not args.diarize:
+        return []
+    try:
+        from faster_whisper.audio import decode_audio
+
+        from synchroni_note.diarization.labeling import SAMPLE_RATE, diarize_for_labeling
+
+        audio = decode_audio(str(args.audio), sampling_rate=SAMPLE_RATE)
+        return diarize_for_labeling(audio, SAMPLE_RATE, k=args.speakers)
+    except Exception as e:  # noqa: BLE001  話者分離が失敗しても文字起こしは続行（speaker は spk0 既定）
+        print(f"[sidecar] diarize skipped: {e!r}", file=sys.stderr, flush=True)
+        return []
+
+
 def _run_file(args: argparse.Namespace) -> int:
     """ファイル一括ストリーム（DD-011 3-C）。``stream_transcribe`` の逐次出力を流す。"""
+    from synchroni_note.diarization.labeling import speaker_for_span
     from synchroni_note.pipeline.transcribe import stream_transcribe
 
     stream = stream_transcribe(
@@ -59,9 +79,13 @@ def _run_file(args: argparse.Namespace) -> int:
             "language": args.language,
         }
     )
+    # 会議後一括ラベリング（DD-012-5）: 全体音声を一度だけ話者分離し、各セグメントへ
+    # 時間の重なりで話者ラベルを付ける。ファイルは全体が手元にあるので inline で付与できる。
+    turns = _diarize_file(args)
     t0 = time.perf_counter()
     count = 0
-    for seg in stream.segments:  # 既存の逐次ジェネレータをそのまま流す（新規ロジックなし）
+    for seg in stream.segments:  # 既存の逐次ジェネレータをそのまま流す
+        spk = speaker_for_span(turns, seg.t_start_ms, seg.t_end_ms) if turns else "spk0"
         emit(
             {
                 "type": "segment",
@@ -69,6 +93,7 @@ def _run_file(args: argparse.Namespace) -> int:
                 "text": seg.text,
                 "t_start_ms": seg.t_start_ms,
                 "t_end_ms": seg.t_end_ms,
+                "speaker": spk,
             }
         )
         count += 1
@@ -96,6 +121,30 @@ def _start_stdin_control(stop_event: threading.Event, paused: threading.Event) -
     threading.Thread(target=_loop, daemon=True, name="stdin-control").start()
 
 
+def _emit_speaker_map(audio_parts: list, spans: list[tuple[int, int, int]], k: int) -> None:
+    """貯めた録音音声を1回だけ話者分離し、seq→話者ラベルの対応を1行 emit する（DD-012-5）。
+
+    会議後一括ラベリング（mic 経路）。失敗しても文字起こし結果は保たれる（emit しないだけ）。
+    """
+    try:
+        import numpy as np
+
+        from synchroni_note.diarization.labeling import (
+            SAMPLE_RATE,
+            diarize_for_labeling,
+            speaker_for_span,
+        )
+
+        audio = np.concatenate([a.reshape(-1) for a in audio_parts])
+        turns = diarize_for_labeling(audio, SAMPLE_RATE, k=k)
+        if not turns:
+            return  # 単一話者扱い（live の暫定 spk0 のまま）→ 置換不要
+        mp = {str(seq): speaker_for_span(turns, s, e) for seq, s, e in spans}
+        emit({"type": "speakers", "map": mp})
+    except Exception as e:  # noqa: BLE001  ラベリング失敗で文字起こしを巻き添えにしない
+        print(f"[sidecar] speaker map skipped: {e!r}", file=sys.stderr, flush=True)
+
+
 def _run_realtime(args: argparse.Namespace) -> int:
     """realtime 経路（DD-010）を JSON Lines で流す。``--mic`` か ``--simulate`` で起動。"""
     from synchroni_note.bench.stt_bench import _load_model, _transcribe
@@ -115,6 +164,12 @@ def _run_realtime(args: argparse.Namespace) -> int:
 
     t0 = time.perf_counter()
     count = 0
+
+    # 会議後一括ラベリング（DD-012-5）用に、録音音声と各セグメントの時間範囲を貯める。
+    # ライブ逐次の話者割当は作り込みが要る（DD-004-1 待ち）ため、停止後に1回だけ分離する。
+    # 長時間録音ではメモリを食う点に注意（16k/mono/f32 ≒ 230MB/時）。
+    diar_audio: list = []  # list[np.ndarray]（録音チャンクの生音声）
+    diar_spans: list[tuple[int, int, int]] = []  # (seq, t_start_ms, t_end_ms)
 
     # ライブ追い上げ整形（DD-012-4）。確定セグメントを別スレッドで qwen 整形し refined を emit。
     # STT を詰まらせないため非ブロッキング: 小さな bounded queue、満杯ならバイパス（整形を捨てる）。
@@ -157,9 +212,14 @@ def _run_realtime(args: argparse.Namespace) -> int:
                 "text": text,
                 "t_start_ms": ch.t_start_ms,
                 "t_end_ms": ch.t_end_ms,
+                "speaker": "spk0",  # 暫定。停止後の一括ラベリング(speakers)で置換（DD-012-5）
             }
         )
         count += 1
+        # 会議後一括ラベリング用に生音声と時間範囲を貯める（停止後に1回だけ分離）。
+        if args.diarize:
+            diar_audio.append(ch.samples)
+            diar_spans.append((ch.seq, ch.t_start_ms, ch.t_end_ms))
         # 追い上げ整形へ回す（非ブロッキング）。満杯なら捨ててバイパス表示（主役は止めない）。
         if refine_q is not None and text:
             try:
@@ -210,6 +270,10 @@ def _run_realtime(args: argparse.Namespace) -> int:
                 stop_event=stop_event,
                 paused=paused,
             )
+        # 会議後一括ラベリング（DD-012-5）: 停止後に貯めた音声を1回だけ話者分離し、
+        # seq→話者ラベルの対応を done の前に送る（UIが完了表示前に話者を反映できる）。
+        if args.diarize and diar_audio:
+            _emit_speaker_map(diar_audio, diar_spans, args.speakers)
         emit({"type": "done", "count": count, "elapsed_s": round(time.perf_counter() - t0, 3)})
         # 整形ワーカーの残りを掃き出してから終了（trailing refined を落とさない）。
         if refine_q is not None and refine_worker is not None:
@@ -333,6 +397,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--threads", type=int, default=4, help="cpu_threads(realtime)")
     parser.add_argument("--max-seg", type=float, default=10.0, help="VADチャンク最大秒")
     parser.add_argument("--device", type=int, default=None, help="入力デバイス番号(既定=None)")
+    parser.add_argument(
+        "--speakers", type=int, default=2, help="想定話者数k(会議後ラベリング・DD-012-5)"
+    )
+    parser.add_argument(
+        "--no-diarize", dest="diarize", action="store_false", help="会議後の話者ラベリングを無効化"
+    )
+    parser.set_defaults(diarize=True)
     parser.add_argument(
         "--refine", action="store_true", help="確定セグメントをlive LLMで追い上げ整形(DD-012-4)"
     )
