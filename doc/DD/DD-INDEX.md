@@ -8,7 +8,7 @@
 |----|------|-----------|
 | DD-014 | P4-3ホットパスRust移植_cpal_whisper-rs_Tokio | 進行中 |
 | DD-014-1 | cpal収音とringbufとVADチャンク化 | 未着手 |
-| DD-014-2 | whisper-rs統合とAVX512ビルド検証 | 未着手（DD-014-1 後 / SIMD検証は前倒し可） |
+| DD-014-2 | whisper-rs統合とAVX512ビルド検証 | 進行中（Phase1 AVX-512検証 完了・前倒し / Phase2 STT統合は DD-014-1 後） |
 | DD-014-3 | Ollamaストリーム連携とTokioタスク設計 | 未着手（DD-014-2 後） |
 | DD-014-4 | token-emit配線とDB書込み集約とP4統合回帰 | 未着手（DD-014-3 ＋ DD-013-3 後） |
 | DD-013 | P4-2協調編集CRDT_AI追記と人間メモのマージ | 進行中 |
