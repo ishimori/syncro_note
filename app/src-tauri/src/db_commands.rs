@@ -11,17 +11,18 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{App, AppHandle, Manager, State};
 
-use crate::db::{self, AppSettings, Attachment, Meeting, Participant, TimelineElement};
+use crate::db::{self, AppSettings, Attachment, Meeting, Participant, SpeakerMapping, TimelineElement};
 
 /// アプリ唯一の DB 接続（書き込み主体は Rust 単独なので 1 接続を Mutex で共有）。
 pub struct DbState(pub Mutex<rusqlite::Connection>);
 
-/// S-03 詳細表示用に、会議・参加者・タイムラインをまとめて返す。
+/// S-03 詳細表示用に、会議・参加者・タイムライン・話者マッピングをまとめて返す。
 #[derive(Serialize)]
 pub struct MeetingDetail {
     pub meeting: Meeting,
     pub participants: Vec<Participant>,
     pub timeline: Vec<TimelineElement>,
+    pub speaker_mappings: Vec<SpeakerMapping>, // 話者番号→名前（S-03 表示名解決・DD-012-11）
 }
 
 /// セットアップ時に DB を開いて `DbState` を manage する。
@@ -68,9 +69,10 @@ pub fn create_meeting(
     meeting: Meeting,
     participants: Vec<Participant>,
     timeline: Vec<TimelineElement>,
+    speaker_mappings: Vec<SpeakerMapping>,
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
-    // meeting→participants→timeline を1トランザクションで（途中失敗で半端な行を残さない）。
+    // meeting→participants→timeline→speaker_mappings を1トランザクションで（途中失敗で半端を残さない）。
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     map_err(db::insert_meeting(&tx, &meeting))?;
     for p in &participants {
@@ -78,6 +80,9 @@ pub fn create_meeting(
     }
     for e in &timeline {
         map_err(db::insert_timeline_element(&tx, e))?;
+    }
+    for sm in &speaker_mappings {
+        map_err(db::insert_speaker_mapping(&tx, sm))?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -146,6 +151,7 @@ pub fn complete_meeting(
     generation_seconds: Option<i64>,
     updated_at: String,
     timeline: Vec<TimelineElement>,
+    speaker_mappings: Vec<SpeakerMapping>,
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -160,6 +166,10 @@ pub fn complete_meeting(
     map_err(db::delete_timeline(&tx, &id))?; // 既存タイムライン（あれば）を消してから入替え
     for e in &timeline {
         map_err(db::insert_timeline_element(&tx, e))?;
+    }
+    map_err(db::delete_speaker_mappings(&tx, &id))?; // 話者マッピングも入替え
+    for sm in &speaker_mappings {
+        map_err(db::insert_speaker_mapping(&tx, sm))?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -177,10 +187,12 @@ pub fn get_meeting_detail(
     };
     let participants = map_err(db::list_participants(&conn, &id))?;
     let timeline = map_err(db::list_timeline(&conn, &id))?;
+    let speaker_mappings = map_err(db::list_speaker_mappings(&conn, &id))?;
     Ok(Some(MeetingDetail {
         meeting,
         participants,
         timeline,
+        speaker_mappings,
     }))
 }
 

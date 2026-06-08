@@ -132,8 +132,39 @@ const participantsLabel = computed<string[]>(() =>
   (detail.value?.participants ?? []).map((p) => (p.role ? `${p.name}（${p.role}）` : p.name)),
 );
 
-const speakerName = (e: { kind: string; speaker_id: number | null }): string =>
-  e.kind === "human_memo" ? "📝人間メモ" : `話者 ${e.speaker_id ?? "?"}`;
+// 話者番号→確定名（confirmed_name ?? ai_guess_name）。speaker_mappings から導出（DD-012-11）。
+const speakerNames = computed<Record<number, string>>(() => {
+  const map: Record<number, string> = {};
+  for (const sm of detail.value?.speaker_mappings ?? []) {
+    const name = sm.confirmed_name ?? sm.ai_guess_name;
+    if (name) map[sm.speaker_id] = name;
+  }
+  return map;
+});
+
+// 表示名: メモ→📝、話者なし→「話者 ?」、確定名があれば名前、無ければ「話者 n」。
+const speakerName = (e: { kind: string; speaker_id: number | null }): string => {
+  if (e.kind === "human_memo") return "📝人間メモ";
+  if (e.speaker_id === null) return "話者 ?";
+  return speakerNames.value[e.speaker_id] ?? `話者 ${e.speaker_id}`;
+};
+
+// 話者ごとの淡い背景色（S-05 と同じ番号→色の規則。気泡は淡色で文字を読みやすく）。DD-012-11。
+const BUBBLE_COLORS = [
+  "blue-2",
+  "deep-orange-2",
+  "green-2",
+  "purple-2",
+  "teal-2",
+  "pink-2",
+  "indigo-2",
+  "brown-3",
+];
+const bubbleColor = (e: { kind: string; speaker_id: number | null }): string => {
+  if (e.kind === "human_memo") return "orange-2";
+  if (e.speaker_id === null) return "grey-2"; // 旧データ（話者なし）は従来どおり
+  return BUBBLE_COLORS[e.speaker_id % BUBBLE_COLORS.length];
+};
 
 // 添付の表示ヘルパ（DD-012-10）。
 const attachIcon = (type: string): string => (type === "xlsx" ? "grid_on" : "picture_as_pdf");
@@ -310,7 +341,7 @@ const copyMinutes = async (): Promise<void> => {
                   :text="[e.text_raw]"
                   :stamp="msToStamp(e.t_ms)"
                   :sent="e.kind === 'human_memo'"
-                  :bg-color="e.kind === 'human_memo' ? 'orange-2' : 'grey-2'"
+                  :bg-color="bubbleColor(e)"
                 />
               </q-card-section>
             </q-expansion-item>

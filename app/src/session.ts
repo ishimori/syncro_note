@@ -6,9 +6,16 @@ import { reactive } from "vue";
 /** 証跡として保存する元タイムライン1行（S-03 詳細で表示）。DBの timeline_elements に対応。 */
 export interface TimelineRow {
   kind: "ai_transcription" | "human_memo";
-  speakerId: number | null; // 話者分離は未実装のため当面 null
+  speakerId: number | null; // 話者番号（spk0→0）。話者分離なし/人間メモは null（DD-012-5/11）
   tMs: number; // 会議開始からの相対ミリ秒
   text: string; // 確定原文 or メモ本文
+}
+
+/** 話者番号→確定名（S-03 表示名解決・色分け用）。DBの speaker_mappings に対応（DD-012-11）。
+ *  保存時に S-07 が meeting_id を付けて SpeakerMapping へ変換する。 */
+export interface SpeakerRow {
+  speakerId: number; // 会議内の話者番号
+  confirmedName: string | null; // 人間が確定した名前（未確定は null＝S-03 で Speaker_n 表示）
 }
 
 export interface MinutesSession {
@@ -18,6 +25,7 @@ export interface MinutesSession {
   meetingId: string | null;
   transcript: string; // 清書元（確定テキスト＋人間メモ・gemmaへ渡す連結文字列）
   timeline: TimelineRow[]; // 証跡（保存時に timeline_elements として書き込む構造化データ）
+  speakers: SpeakerRow[]; // 話者番号→確定名（保存時に speaker_mappings へ・DD-012-11）
   finalMarkdown: string; // 清書結果（summary-done のMarkdown・正規化済み）
   batchModel: string | null; // 清書に使ったモデル名（summary-meta）
   generationSeconds: number | null; // 清書所要秒（summary-done の eval_s）
@@ -28,6 +36,7 @@ export const minutesSession = reactive<MinutesSession>({
   meetingId: null,
   transcript: "",
   timeline: [],
+  speakers: [],
   finalMarkdown: "",
   batchModel: null,
   generationSeconds: null,
@@ -39,6 +48,7 @@ export const resetMinutesSession = (): void => {
   minutesSession.meetingId = null;
   minutesSession.transcript = "";
   minutesSession.timeline = [];
+  minutesSession.speakers = [];
   minutesSession.finalMarkdown = "";
   minutesSession.batchModel = null;
   minutesSession.generationSeconds = null;

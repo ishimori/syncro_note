@@ -47,22 +47,36 @@ export interface TimelineElement {
   created_at: string;
 }
 
+/** 話者番号→名前の対応（DBの speaker_mappings に対応・DD-012-11）。
+ *  表示名導出: confirmed_name ?? ai_guess_name ?? `Speaker_${speaker_id}`。 */
+export interface SpeakerMapping {
+  meeting_id: string;
+  speaker_id: number;
+  confirmed_name: string | null;
+  ai_guess_name: string | null;
+  confirmed_participant_id: string | null;
+  updated_at: string;
+}
+
 export interface MeetingDetail {
   meeting: Meeting;
   participants: Participant[];
   timeline: TimelineElement[];
+  speaker_mappings: SpeakerMapping[];
 }
 
 /** 指定年月の会議一覧（scheduled_start 昇順）。month は 1-12。 */
 export const listMeetings = (year: number, month: number): Promise<Meeting[]> =>
   invoke<Meeting[]>("list_meetings", { year, month });
 
-/** 会議＋参加者＋（任意で）元タイムラインを保存。id・各時刻は呼び出し側で確定して渡す。 */
+/** 会議＋参加者＋（任意で）元タイムライン・話者マッピングを保存。id・各時刻は呼び出し側で確定して渡す。 */
 export const createMeeting = (
   meeting: Meeting,
   participants: Participant[],
   timeline: TimelineElement[] = [],
-): Promise<void> => invoke<void>("create_meeting", { meeting, participants, timeline });
+  speakerMappings: SpeakerMapping[] = [],
+): Promise<void> =>
+  invoke<void>("create_meeting", { meeting, participants, timeline, speakerMappings });
 
 /** 会議1件の詳細（本体＋参加者＋タイムライン）。無ければ null。 */
 export const getMeetingDetail = (id: string): Promise<MeetingDetail | null> =>
@@ -77,6 +91,7 @@ export const completeMeeting = (
   generationSeconds: number | null,
   updatedAt: string,
   timeline: TimelineElement[],
+  speakerMappings: SpeakerMapping[] = [],
 ): Promise<void> =>
   invoke<void>("complete_meeting", {
     id,
@@ -85,6 +100,7 @@ export const completeMeeting = (
     generationSeconds,
     updatedAt,
     timeline,
+    speakerMappings,
   });
 
 /** 会議を1件削除（DD-012-9）。参加者・タイムライン・添付・用語は CASCADE で連動削除。 */

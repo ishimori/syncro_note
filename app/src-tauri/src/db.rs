@@ -99,6 +99,31 @@ impl TimelineElement {
     }
 }
 
+/// 話者マッピング（`speaker_mappings`）。会議内の話者番号(speaker_id)→確定/推測名（DD-012-11）。
+/// 表示名導出は `confirmed_name ?? ai_guess_name ?? ('Speaker_' || speaker_id)`（スキーマ §6）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeakerMapping {
+    pub meeting_id: String,
+    pub speaker_id: i64,
+    pub confirmed_name: Option<String>,         // 人間確定（最優先）
+    pub ai_guess_name: Option<String>,          // AI推測
+    pub confirmed_participant_id: Option<String>, // 確定時の参加者紐付け（当面 None）
+    pub updated_at: String,
+}
+
+impl SpeakerMapping {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(SpeakerMapping {
+            meeting_id: row.get("meeting_id")?,
+            speaker_id: row.get("speaker_id")?,
+            confirmed_name: row.get("confirmed_name")?,
+            ai_guess_name: row.get("ai_guess_name")?,
+            confirmed_participant_id: row.get("confirmed_participant_id")?,
+            updated_at: row.get("updated_at")?,
+        })
+    }
+}
+
 // ============ 接続 ============
 
 /// ファイルDBを開き、スキーマ未適用なら適用して返す。接続ごとのPRAGMAも本関数で必ず通す。
@@ -320,6 +345,41 @@ pub fn list_timeline(conn: &Connection, meeting_id: &str) -> Result<Vec<Timeline
         "SELECT * FROM timeline_elements WHERE meeting_id = ?1 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map(params![meeting_id], TimelineElement::from_row)?;
+    rows.collect()
+}
+
+// ============ speaker_mappings（話者番号→名前・DD-012-11） ============
+
+/// 話者マッピングを1件 upsert する（同 (meeting_id, speaker_id) は置換）。
+pub fn insert_speaker_mapping(conn: &Connection, m: &SpeakerMapping) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO speaker_mappings (
+            meeting_id, speaker_id, confirmed_name, ai_guess_name,
+            confirmed_participant_id, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            m.meeting_id, m.speaker_id, m.confirmed_name, m.ai_guess_name,
+            m.confirmed_participant_id, m.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 会議の話者マッピングを全削除する（保存時の入替え用 / S-07）。
+pub fn delete_speaker_mappings(conn: &Connection, meeting_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM speaker_mappings WHERE meeting_id = ?1",
+        params![meeting_id],
+    )?;
+    Ok(())
+}
+
+/// 会議の話者マッピングを speaker_id 昇順で返す（S-03 詳細の表示名解決）。
+pub fn list_speaker_mappings(conn: &Connection, meeting_id: &str) -> Result<Vec<SpeakerMapping>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM speaker_mappings WHERE meeting_id = ?1 ORDER BY speaker_id ASC",
+    )?;
+    let rows = stmt.query_map(params![meeting_id], SpeakerMapping::from_row)?;
     rows.collect()
 }
 
@@ -681,6 +741,39 @@ mod tests {
         let tl = list_timeline(&conn, "m1").unwrap();
         assert_eq!(tl.len(), 1); // 古い行は消えて1件に入替わっている
         assert_eq!(tl[0].text_raw, "録音された発話");
+    }
+
+    #[test]
+    fn speaker_mappings_roundtrip_replace_and_cascade() {
+        // 保存→読出しで話者マッピングが往復し、再保存(delete→insert)で入替わり、会議削除で CASCADE される（DD-012-11）。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "active")).unwrap();
+        let sm = |sid: i64, name: &str| SpeakerMapping {
+            meeting_id: "m1".into(),
+            speaker_id: sid,
+            confirmed_name: Some(name.into()),
+            ai_guess_name: None,
+            confirmed_participant_id: None,
+            updated_at: "2026-06-08T11:00:00".into(),
+        };
+        insert_speaker_mapping(&conn, &sm(0, "鈴木")).unwrap();
+        insert_speaker_mapping(&conn, &sm(1, "田中")).unwrap();
+        let got = list_speaker_mappings(&conn, "m1").unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].speaker_id, 0);
+        assert_eq!(got[0].confirmed_name.as_deref(), Some("鈴木"));
+        assert_eq!(got[1].confirmed_name.as_deref(), Some("田中")); // speaker_id 昇順
+
+        // 入替え（complete_meeting の delete→insert 相当）。
+        delete_speaker_mappings(&conn, "m1").unwrap();
+        insert_speaker_mapping(&conn, &sm(0, "佐藤")).unwrap();
+        let got2 = list_speaker_mappings(&conn, "m1").unwrap();
+        assert_eq!(got2.len(), 1);
+        assert_eq!(got2[0].confirmed_name.as_deref(), Some("佐藤"));
+
+        // 会議削除で CASCADE 連動削除（FK ON）。
+        delete_meeting(&conn, "m1").unwrap();
+        assert_eq!(list_speaker_mappings(&conn, "m1").unwrap().len(), 0);
     }
 
     #[test]

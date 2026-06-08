@@ -10,7 +10,14 @@ import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
 import { minutesSession, resetMinutesSession } from "../session";
-import { completeMeeting, createMeeting, localIso, type Meeting, type TimelineElement } from "../api";
+import {
+  completeMeeting,
+  createMeeting,
+  localIso,
+  type Meeting,
+  type SpeakerMapping,
+  type TimelineElement,
+} from "../api";
 import { setActive } from "../title";
 
 const router = useRouter();
@@ -95,6 +102,16 @@ const save = async (): Promise<void> => {
         is_refined: false,
         created_at: now,
       }));
+    // 話者番号→確定名を speaker_mappings として保存（S-03 で表示名解決＋色分け・DD-012-11）。
+    const buildSpeakers = (meetingId: string): SpeakerMapping[] =>
+      minutesSession.speakers.map((s) => ({
+        meeting_id: meetingId,
+        speaker_id: s.speakerId,
+        confirmed_name: s.confirmedName,
+        ai_guess_name: null,
+        confirmed_participant_id: null,
+        updated_at: now,
+      }));
 
     if (minutesSession.meetingId) {
       // 予定を開いて録音した: その予定を「完了」へ書き戻す（予定日・タイトルは保持＝今日へずらさない）。
@@ -106,6 +123,7 @@ const save = async (): Promise<void> => {
         minutesSession.generationSeconds,
         now, // updated_at（予定日 scheduled_start は保持＝今日へずらさない）
         buildTimeline(linkedId),
+        buildSpeakers(linkedId),
       );
     } else {
       // 予定を開かずその場で録音した: 今日の新規会議を「完了」で1件作成する（従来どおり）。
@@ -127,7 +145,7 @@ const save = async (): Promise<void> => {
         created_at: now,
         updated_at: now,
       };
-      await createMeeting(meeting, [], buildTimeline(id));
+      await createMeeting(meeting, [], buildTimeline(id), buildSpeakers(id));
     }
     resetMinutesSession();
     router.push("/s01");

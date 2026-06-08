@@ -206,11 +206,13 @@ const SPEAKER_COLORS = [
   "indigo-5",
   "brown-5",
 ];
-const speakerColor = (speaker: string): string => {
+// "spk0"/"Speaker_0" などの末尾番号を話者番号(整数)として取り出す。無ければ null（未分離扱い）。
+const speakerNum = (speaker: string): number | null => {
   const m = speaker.match(/(\d+)$/);
-  const idx = m ? parseInt(m[1], 10) : 0;
-  return SPEAKER_COLORS[idx % SPEAKER_COLORS.length];
+  return m ? parseInt(m[1], 10) : null;
 };
+const speakerColor = (speaker: string): string =>
+  SPEAKER_COLORS[(speakerNum(speaker) ?? 0) % SPEAKER_COLORS.length];
 
 const assign = (sid: string, name: string): void => {
   mapping[sid] = name;
@@ -298,11 +300,24 @@ const endMeeting = async (): Promise<void> => {
   }
   minutesSession.transcript = transcript;
   // 証跡（元タイムライン）も構造化して持ち回り、保存時に timeline_elements へ書き込む。
+  // 話者番号を埋める（DD-012-11）→ S-03 で話者表示＋色分けに使う。人間メモは null。
   minutesSession.timeline = timeline.map((x) => ({
     kind: x.type === "memo" ? ("human_memo" as const) : ("ai_transcription" as const),
-    speakerId: null, // 話者分離は未実装
+    speakerId: x.type === "memo" ? null : speakerNum(x.speaker),
     tMs: clockToMs(x.t),
     text: x.text,
+  }));
+  // 人間が確定した話者名（番号→名前）を speaker_mappings 用に集約（確定済みのみ。未確定は S-03 で Speaker_n）。
+  const speakerMap = new Map<number, string>();
+  timeline.forEach((x) => {
+    if (x.type !== "ai") return;
+    const n = speakerNum(x.speaker);
+    const name = mapping[x.speaker];
+    if (n !== null && name) speakerMap.set(n, name);
+  });
+  minutesSession.speakers = [...speakerMap].map(([speakerId, confirmedName]) => ({
+    speakerId,
+    confirmedName,
   }));
   minutesSession.finalMarkdown = "";
   minutesSession.batchModel = null;
