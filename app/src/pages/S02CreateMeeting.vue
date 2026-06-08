@@ -20,6 +20,7 @@ import {
   addAttachment,
   listAttachments,
   removeAttachment,
+  parseCalendarText,
   localIso,
   type Meeting,
   type Participant as DbParticipant,
@@ -44,6 +45,55 @@ const date = ref("2026/06/18");
 const start = ref("13:00");
 const end = ref("14:00");
 const place = ref("会議室A");
+
+// 予定コピペ取込（DD-012-13）: カレンダーの予定テキストを貼り付け→qwen が構造化→下の各欄へ反映。
+// 完全オフライン（外部送信なし）。年がテキストに無い場合はシステム年で補完し「要確認」表示する。
+const pasteText = ref("");
+const parsing = ref(false);
+const yearInferred = ref(false); // 年を補完した＝日付欄に要確認ヒントを出す
+
+const importFromPaste = async (): Promise<void> => {
+  if (!pasteText.value.trim()) return;
+  parsing.value = true;
+  yearInferred.value = false;
+  try {
+    const d = await parseCalendarText(pasteText.value);
+    if (d.title) title.value = d.title;
+    if (d.scheduled_start) {
+      date.value = d.scheduled_start.slice(0, 10).replace(/-/g, "/");
+      start.value = d.scheduled_start.slice(11, 16);
+      end.value = d.scheduled_end ? d.scheduled_end.slice(11, 16) : "";
+      yearInferred.value = d.year_inferred; // 年補完時のみ要確認
+    }
+    if (d.place) place.value = d.place;
+    if (d.agenda) agenda.value = d.agenda;
+    // 参加者は取込結果で入れ替える（完了会議は話者リンク保全のため触れない）。
+    if (!participantsLocked.value && d.participants.length > 0) {
+      participants.splice(
+        0,
+        participants.length,
+        ...d.participants.map((p) => ({ name: p.name, role: p.role, voice: "" })),
+      );
+    }
+    $q.notify({
+      message: "予定を取り込みました（内容を確認してください）",
+      caption: yearInferred.value ? "年が無かったため今年で補完しました。日付をご確認ください。" : undefined,
+      color: "positive",
+      icon: "event_available",
+      timeout: 3000,
+    });
+  } catch (e) {
+    $q.notify({
+      message: "取り込みに失敗しました",
+      caption: String(e),
+      color: "warning",
+      icon: "warning",
+      timeout: 4000,
+    });
+  } finally {
+    parsing.value = false;
+  }
+};
 
 // アジェンダ（Markdown可）
 const agenda = ref("- 基本設計書のレビュー\n- 話者分離方式の確定\n- 次スプリントのDD候補");
@@ -347,6 +397,41 @@ const save = async (): Promise<void> => {
           ここで入力した前提（参加者・アジェンダ・用語・資料）が、リアルタイム補正と終了後の清書プロンプトに渡ります。
         </q-banner>
 
+        <!-- 予定をコピペで取込（DD-012-13: カレンダーの予定テキスト→qwen で下の各欄を自動入力） -->
+        <q-card v-if="!isEditing" flat bordered class="q-mb-md bg-indigo-1">
+          <q-card-section class="q-pb-xs">
+            <div class="text-subtitle1 text-weight-medium">
+              <q-icon name="content_paste" class="q-mr-xs" />予定をコピペで取込
+            </div>
+            <div class="text-caption text-grey-8 q-mt-xs">
+              Googleカレンダー等の予定の詳細をコピーして貼り付け、「取り込む」を押すと、件名・日時・場所・参加者を自動で入力します（完全オフライン）。
+            </div>
+          </q-card-section>
+          <q-card-section class="q-pt-none">
+            <q-input
+              outlined
+              type="textarea"
+              v-model="pasteText"
+              autogrow
+              bg-color="white"
+              input-style="min-height:90px"
+              placeholder="例）SendaiM様案件事前Webミーティング&#10;6月 9日 (火曜日)・午後4:30～5:00 …"
+            />
+            <div class="row justify-end q-mt-sm">
+              <q-btn
+                unelevated
+                no-caps
+                color="indigo"
+                icon="auto_fix_high"
+                label="取り込む"
+                :loading="parsing"
+                :disable="!pasteText.trim()"
+                @click="importFromPaste"
+              />
+            </div>
+          </q-card-section>
+        </q-card>
+
         <!-- 基本情報 -->
         <q-card flat bordered class="q-mb-md">
           <q-card-section>
@@ -358,8 +443,19 @@ const save = async (): Promise<void> => {
           <q-card-section class="q-gutter-md">
             <q-input outlined v-model="title" label="会議名 *" :rules="[(v: string) => !!v || '必須']" />
             <div class="row q-col-gutter-md">
-              <q-input class="col-12 col-sm-6" outlined v-model="date" label="日付" mask="####/##/##">
-                <template v-slot:append><q-icon name="event" /></template>
+              <q-input
+                class="col-12 col-sm-6"
+                outlined
+                v-model="date"
+                label="日付"
+                mask="####/##/##"
+                :bg-color="yearInferred ? 'orange-1' : undefined"
+                :hint="yearInferred ? '年が無かったため今年で補完しました。ご確認ください。' : undefined"
+                @update:model-value="yearInferred = false"
+              >
+                <template v-slot:append>
+                  <q-icon :name="yearInferred ? 'help' : 'event'" :color="yearInferred ? 'orange-8' : undefined" />
+                </template>
               </q-input>
               <q-input class="col-6 col-sm-3" outlined v-model="start" label="開始" mask="##:##" />
               <q-input class="col-6 col-sm-3" outlined v-model="end" label="終了" mask="##:##" />

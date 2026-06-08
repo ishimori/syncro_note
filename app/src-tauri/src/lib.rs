@@ -103,6 +103,66 @@ pub(crate) fn extract_text_blocking(
     Err(format!("抽出結果(JSON)を取得できません: {}", stderr.trim()))
 }
 
+/// カレンダー予定テキストを qwen で構造化する（DD-012-13）。
+///
+/// `calendar_parse_sidecar` を**同期(ブロッキング)実行**し、予定テキストを stdin で渡して
+/// 1行の `type=calendar-parse` JSON を受け取る。`extract_text_blocking`（DD-012-10）と同じ
+/// 一発取り契約だが、入力が長文テキストなので引数ではなく stdin から流す（行長・引用符の問題回避）。
+/// 戻り値は draft オブジェクト（title/scheduled_start/scheduled_end/place/agenda/participants/year_inferred）。
+#[tauri::command]
+fn parse_calendar_text(text: String) -> Result<Value, String> {
+    if text.trim().is_empty() {
+        return Err("予定テキストが空です".to_string());
+    }
+    let py_dir = repo_python_dir()?;
+    let mut cmd = Command::new("uv");
+    cmd.current_dir(&py_dir).env("PYTHONUTF8", "1").args([
+        "run",
+        "python",
+        "-m",
+        "synchroni_note.pipeline.calendar_parse_sidecar",
+        "-", // 予定テキストは stdin から受け取る
+    ]);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("取込サイドカー起動失敗(uv は PATH にある?): {e}"))?;
+    {
+        // stdin を閉じる（drop）まで Python は読み続ける。ブロックを抜けて drop=EOF を送る。
+        let mut stdin = child.stdin.take().ok_or("stdin を開けません")?;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("stdin 書き込み失敗: {e}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("取込サイドカー待機失敗: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 末尾から type=calendar-parse の行を拾う（前段に uv 警告が出ても無視）。
+    for line in stdout.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("calendar-parse") {
+            return match v.get("status").and_then(|s| s.as_str()) {
+                Some("done") => v.get("draft").cloned().ok_or_else(|| "draft 欠落".to_string()),
+                _ => Err(v
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("予定の解析に失敗しました")
+                    .to_string()),
+            };
+        }
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("解析結果(JSON)を取得できません: {}", stderr.trim()))
+}
+
 /// サイドカーが流す JSON Lines を、どの Tauri イベント名へ中継するかの系統。
 /// STT（文字起こし）と Summary（清書・DD-012-2）で名前空間を分ける。
 #[derive(Clone, Copy)]
@@ -566,6 +626,7 @@ pub fn run() {
             start_level,
             start_summarize,
             abort_summarize,
+            parse_calendar_text,
             db_commands::list_meetings,
             db_commands::create_meeting,
             db_commands::complete_meeting,

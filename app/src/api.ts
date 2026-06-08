@@ -171,6 +171,24 @@ export const listAttachments = (meetingId: string): Promise<Attachment[]> =>
 export const removeAttachment = (id: string): Promise<void> =>
   invoke<void>("remove_attachment", { id });
 
+/** カレンダー予定のコピペ取込結果（DD-012-13）。LLM が構造化した会議下書き。
+ *  `scheduled_start`/`end` はローカルISO8601(無TZ)。日時が読み取れなければ null。
+ *  `year_inferred`＝年がテキストに無くシステム年で補完した（UIは「要確認」表示にする）。 */
+export interface ParsedMeetingDraft {
+  title: string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  place: string;
+  agenda: string;
+  participants: { name: string; role: string }[];
+  year_inferred: boolean;
+}
+
+/** カレンダーからコピペした予定テキストを qwen で構造化する（DD-012-13・完全オフライン）。
+ *  サイドカーをブロッキング実行して draft を1個返す。S-02 フォームへ流し込む用途。 */
+export const parseCalendarText = (text: string): Promise<ParsedMeetingDraft> =>
+  invoke<ParsedMeetingDraft>("parse_calendar_text", { text });
+
 /** 確認用デモデータ投入（dev のみ・冪等）。当月の year/month を渡す。 */
 export const seedDemo = (year: number, month: number): Promise<void> =>
   invoke<void>("seed_demo", { year, month });
