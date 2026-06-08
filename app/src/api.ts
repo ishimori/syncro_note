@@ -86,6 +86,46 @@ export const updateMeetingSchedule = (
 export const updateMeeting = (meeting: Meeting, participants?: Participant[]): Promise<void> =>
   invoke<void>("update_meeting", { meeting, participants: participants ?? null });
 
+export type ParseStatus = "pending" | "done" | "error";
+
+export interface Attachment {
+  id: string;
+  meeting_id: string;
+  file_name: string;
+  local_path: string;
+  file_type: "xlsx" | "pdf";
+  extracted_text: string | null;
+  parse_status: ParseStatus;
+  created_at: string;
+}
+
+/** 事前資料を取り込む（S-02 / DD-012-10）。元ファイルをアプリ内へコピー→抽出→done/error を反映した
+ *  確定後の行を返す（抽出はサイドカーで完結＝完全オフライン）。id・created_at は呼び出し側で確定して渡す。 */
+export const addAttachment = (
+  id: string,
+  meetingId: string,
+  srcPath: string,
+  fileName: string,
+  fileType: "xlsx" | "pdf",
+  createdAt: string,
+): Promise<Attachment> =>
+  invoke<Attachment>("add_attachment", {
+    id,
+    meetingId,
+    srcPath,
+    fileName,
+    fileType,
+    createdAt,
+  });
+
+/** 会議の添付一覧（created_at 昇順 / S-02・S-03）。 */
+export const listAttachments = (meetingId: string): Promise<Attachment[]> =>
+  invoke<Attachment[]>("list_attachments", { meetingId });
+
+/** 添付を1件削除（行＋コピー済みファイル / DD-012-10）。 */
+export const removeAttachment = (id: string): Promise<void> =>
+  invoke<void>("remove_attachment", { id });
+
 /** 確認用デモデータ投入（dev のみ・冪等）。当月の year/month を渡す。 */
 export const seedDemo = (year: number, month: number): Promise<void> =>
   invoke<void>("seed_demo", { year, month });

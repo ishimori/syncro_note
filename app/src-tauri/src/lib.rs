@@ -44,6 +44,65 @@ fn repo_python_dir() -> Result<PathBuf, String> {
         .map_err(|e| format!("python ディレクトリが見つかりません({}): {e}", dir.display()))
 }
 
+/// 添付の本文抽出結果（sidecar `--extract` の done/error を畳んだ形・DD-012-10）。
+pub(crate) struct ExtractOutcome {
+    pub status: String,       // "done" | "error"
+    pub text: Option<String>, // done のとき抽出本文（空＝画像PDF等）
+    pub message: Option<String>, // error のとき理由
+}
+
+/// サイドカー `--extract` を**同期(ブロッキング)実行**し、1行の JSON 結果を返す（DD-012-10）。
+///
+/// 文字起こし/清書の streaming relay（`spawn_and_relay`）と違い、結果を1個だけ受け取りたい
+/// 抽出用途なので `output()` で待ち合わせる。uv の警告が混ざっても `type=extract` 行だけを拾う。
+pub(crate) fn extract_text_blocking(
+    path: &str,
+    file_type: Option<&str>,
+) -> Result<ExtractOutcome, String> {
+    let py_dir = repo_python_dir()?;
+    let mut cmd = Command::new("uv");
+    cmd.current_dir(&py_dir)
+        .env("PYTHONUTF8", "1") // 文字化け保険
+        .args([
+            "run",
+            "python",
+            "-m",
+            "synchroni_note.pipeline.sidecar",
+            "--extract",
+            path,
+        ]);
+    if let Some(t) = file_type {
+        cmd.args(["--type", t]);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("抽出サイドカー起動失敗(uv は PATH にある?): {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 末尾から type=extract の行を探す（最後の1行が結果。前段に警告が出ても無視）。
+    for line in stdout.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("extract") {
+            return Ok(ExtractOutcome {
+                status: v
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("error")
+                    .to_string(),
+                text: v.get("text").and_then(|t| t.as_str()).map(str::to_string),
+                message: v.get("message").and_then(|m| m.as_str()).map(str::to_string),
+            });
+        }
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("抽出結果(JSON)を取得できません: {}", stderr.trim()))
+}
+
 /// サイドカーが流す JSON Lines を、どの Tauri イベント名へ中継するかの系統。
 /// STT（文字起こし）と Summary（清書・DD-012-2）で名前空間を分ける。
 #[derive(Clone, Copy)]
@@ -448,6 +507,9 @@ pub fn run() {
             db_commands::update_meeting_schedule,
             db_commands::delete_meeting,
             db_commands::get_meeting_detail,
+            db_commands::add_attachment,
+            db_commands::list_attachments,
+            db_commands::remove_attachment,
             db_commands::seed_demo,
             db_commands::get_settings,
             db_commands::save_settings,

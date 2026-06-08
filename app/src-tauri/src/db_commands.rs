@@ -9,9 +9,9 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{App, Manager, State};
+use tauri::{App, AppHandle, Manager, State};
 
-use crate::db::{self, AppSettings, Meeting, Participant, TimelineElement};
+use crate::db::{self, AppSettings, Attachment, Meeting, Participant, TimelineElement};
 
 /// アプリ唯一の DB 接続（書き込み主体は Rust 単独なので 1 接続を Mutex で共有）。
 pub struct DbState(pub Mutex<rusqlite::Connection>);
@@ -156,6 +156,106 @@ pub fn get_meeting_detail(
 pub fn seed_demo(state: State<'_, DbState>, year: i32, month: u32) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     map_err(db::seed_demo_data(&conn, year, month))
+}
+
+/// 添付の保存先ディレクトリ（`app_data_dir/attachments/`）を作って返す。
+fn attachments_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// 事前資料を取り込む（S-02 / DD-012-10）。元ファイルをアプリ内へコピー→`pending` 行作成→
+/// サイドカー抽出→`done`/`error`＋本文を反映し、確定後の行を返す。
+///
+/// 抽出（サイドカー実行）中は **DB ロックを保持しない**（数秒かかるため UI/他コマンドを止めない）。
+/// id・file_type・created_at は frontend が確定して渡す（`db.rs` の純関数設計に合わせる）。
+#[tauri::command]
+pub fn add_attachment(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    id: String,
+    meeting_id: String,
+    src_path: String,
+    file_name: String,
+    file_type: String,
+    created_at: String,
+) -> Result<Attachment, String> {
+    // 1) アプリ内へコピー（元ファイルが消えても抽出/再表示できるように local_path を持つ）。
+    let dest = attachments_dir(&app)?.join(format!("{id}_{file_name}"));
+    std::fs::copy(&src_path, &dest).map_err(|e| format!("ファイルのコピーに失敗: {e}"))?;
+    let local_path = dest.to_string_lossy().to_string();
+
+    // 2) pending 行を作る（ここだけロック→即解放）。
+    let mut row = Attachment {
+        id,
+        meeting_id,
+        file_name,
+        local_path: local_path.clone(),
+        file_type: file_type.clone(),
+        extracted_text: None,
+        parse_status: "pending".into(),
+        created_at,
+    };
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        map_err(db::insert_attachment(&conn, &row))?;
+    }
+
+    // 3) 抽出（ロック非保持。失敗してもファイル/行は残し error に倒す＝会議作成を妨げない）。
+    let outcome = crate::extract_text_blocking(&local_path, Some(&file_type));
+    let (status, text): (String, Option<String>) = match outcome {
+        Ok(o) if o.status == "done" => ("done".into(), o.text),
+        Ok(o) => {
+            eprintln!("[attach] extract error: {:?}", o.message);
+            ("error".into(), None)
+        }
+        Err(e) => {
+            eprintln!("[attach] extract failed: {e}");
+            ("error".into(), None)
+        }
+    };
+
+    // 4) 結果を反映（再ロック）。
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        map_err(db::update_attachment_parse(
+            &conn,
+            &row.id,
+            &status,
+            text.as_deref(),
+        ))?;
+    }
+    row.parse_status = status;
+    row.extracted_text = text;
+    Ok(row)
+}
+
+/// 会議の添付一覧を返す（S-02 一覧・S-03 添付チップ）。
+#[tauri::command]
+pub fn list_attachments(
+    state: State<'_, DbState>,
+    meeting_id: String,
+) -> Result<Vec<Attachment>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    map_err(db::list_attachments(&conn, &meeting_id))
+}
+
+/// 添付を1件削除する（行＋コピー済みファイル）。ファイル削除は best-effort（失敗しても行は消す）。
+#[tauri::command]
+pub fn remove_attachment(state: State<'_, DbState>, id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    // 先に local_path を引いてから行削除（ファイルの後始末用）。
+    let local_path = db::get_attachment_path(&conn, &id).map_err(|e| e.to_string())?;
+    map_err(db::delete_attachment(&conn, &id))?;
+    if let Some(p) = local_path {
+        let _ = std::fs::remove_file(p); // best-effort（既に無くてもOK）
+    }
+    Ok(())
 }
 
 /// 設定（app_settings 単一行）を返す（S-08 ロード／DD-012-7）。

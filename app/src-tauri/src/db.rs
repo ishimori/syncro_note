@@ -314,6 +314,93 @@ pub fn list_timeline(conn: &Connection, meeting_id: &str) -> Result<Vec<Timeline
     rows.collect()
 }
 
+// ============ attachments（事前資料・DD-012-10） ============
+
+/// 事前資料の添付（`attachments`）。`extracted_text` は抽出結果キャッシュ（pending 中は None）。
+/// `parse_status` ∈ {pending, done, error}。`file_type` ∈ {xlsx, pdf}（schema.sql §4 の CHECK と一致）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Attachment {
+    pub id: String,
+    pub meeting_id: String,
+    pub file_name: String,
+    pub local_path: String,
+    pub file_type: String,
+    pub extracted_text: Option<String>,
+    pub parse_status: String,
+    pub created_at: String,
+}
+
+impl Attachment {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Attachment {
+            id: row.get("id")?,
+            meeting_id: row.get("meeting_id")?,
+            file_name: row.get("file_name")?,
+            local_path: row.get("local_path")?,
+            file_type: row.get("file_type")?,
+            extracted_text: row.get("extracted_text")?,
+            parse_status: row.get("parse_status")?,
+            created_at: row.get("created_at")?,
+        })
+    }
+}
+
+/// 添付を1件挿入する（取り込み時は `parse_status='pending'`・`extracted_text=None` で作る）。
+pub fn insert_attachment(conn: &Connection, a: &Attachment) -> Result<()> {
+    conn.execute(
+        "INSERT INTO attachments (
+            id, meeting_id, file_name, local_path, file_type,
+            extracted_text, parse_status, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            a.id, a.meeting_id, a.file_name, a.local_path, a.file_type,
+            a.extracted_text, a.parse_status, a.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 会議の添付を created_at 昇順で返す（S-02 一覧・S-03 添付チップ・清書入力）。
+pub fn list_attachments(conn: &Connection, meeting_id: &str) -> Result<Vec<Attachment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, meeting_id, file_name, local_path, file_type,
+                extracted_text, parse_status, created_at
+         FROM attachments WHERE meeting_id = ?1 ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map(params![meeting_id], Attachment::from_row)?;
+    rows.collect()
+}
+
+/// 抽出結果を反映する（sidecar 完了後）。`status`∈{done,error}、`extracted_text` は done のとき本文。
+pub fn update_attachment_parse(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    extracted_text: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE attachments SET parse_status = ?2, extracted_text = ?3 WHERE id = ?1",
+        params![id, status, extracted_text],
+    )?;
+    Ok(())
+}
+
+/// 添付1件の `local_path` を返す（削除時のファイル後始末用。無ければ None）。
+pub fn get_attachment_path(conn: &Connection, id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT local_path FROM attachments WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// 添付を1件削除する（行のみ。コピー済みファイルの後始末は command 層が行う）。
+pub fn delete_attachment(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM attachments WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 // ============ app_settings（単一行・DD-012-7） ============
 
 /// アプリ設定（`app_settings` 単一行 id=1）。S-08 のフォームと1:1。
@@ -829,5 +916,64 @@ mod tests {
         }
         delete_participants(&conn, "m1").unwrap();
         assert!(list_participants(&conn, "m1").unwrap().is_empty());
+    }
+
+    fn attachment(id: &str, meeting_id: &str, name: &str, ftype: &str) -> Attachment {
+        Attachment {
+            id: id.into(),
+            meeting_id: meeting_id.into(),
+            file_name: name.into(),
+            local_path: format!("/data/attachments/{id}_{name}"),
+            file_type: ftype.into(),
+            extracted_text: None,
+            parse_status: "pending".into(),
+            created_at: "2026-06-08T10:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn attachment_crud_and_parse_update() {
+        // DD-012-10: 取り込み(pending)→抽出反映(done+本文)→一覧→削除の一周。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled")).unwrap();
+        insert_attachment(&conn, &attachment("a1", "m1", "予算.xlsx", "xlsx")).unwrap();
+        insert_attachment(&conn, &attachment("a2", "m1", "資料.pdf", "pdf")).unwrap();
+        let got = list_attachments(&conn, "m1").unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|a| a.parse_status == "pending" && a.extracted_text.is_none()));
+
+        // 抽出成功を反映（日本語本文が往復する）。
+        update_attachment_parse(&conn, "a1", "done", Some("# 議題\n予算確認")).unwrap();
+        let a1 = list_attachments(&conn, "m1").unwrap().into_iter().find(|a| a.id == "a1").unwrap();
+        assert_eq!(a1.parse_status, "done");
+        assert_eq!(a1.extracted_text.as_deref(), Some("# 議題\n予算確認"));
+        // 抽出失敗は本文 None のまま error に。
+        update_attachment_parse(&conn, "a2", "error", None).unwrap();
+        let a2 = list_attachments(&conn, "m1").unwrap().into_iter().find(|a| a.id == "a2").unwrap();
+        assert_eq!(a2.parse_status, "error");
+        assert!(a2.extracted_text.is_none());
+
+        delete_attachment(&conn, "a1").unwrap();
+        assert_eq!(list_attachments(&conn, "m1").unwrap().len(), 1);
+        delete_attachment(&conn, "missing").unwrap(); // 存在しないIDでも無害（0行）
+    }
+
+    #[test]
+    fn attachment_cascade_on_meeting_delete() {
+        // 会議削除で添付行も連動消去（schema.sql ON DELETE CASCADE）。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "completed")).unwrap();
+        insert_attachment(&conn, &attachment("a1", "m1", "資料.pdf", "pdf")).unwrap();
+        delete_meeting(&conn, "m1").unwrap();
+        assert!(list_attachments(&conn, "m1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn attachment_rejects_bad_file_type_and_orphan() {
+        // schema.sql の CHECK(file_type) と FK を担保。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "会議", "2026-06-08T10:00:00", "scheduled")).unwrap();
+        assert!(insert_attachment(&conn, &attachment("a1", "m1", "x.docx", "docx")).is_err()); // CHECK
+        assert!(insert_attachment(&conn, &attachment("a2", "none", "x.pdf", "pdf")).is_err()); // FK
     }
 }

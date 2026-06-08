@@ -72,11 +72,11 @@
 - [x] 🔬 機械検証: [test_extract.py](../../python/tests/test_extract.py) 10件パス（xlsx日本語/見出し・pdfテキストレイヤ・拡張子推定・未対応→ValueError・空PDF→empty・上限トリム・破損→例外・sidecar done/error契約・ネットライブラリ非混入）。ruff クリーン。既存 sidecar/smoke テストも無傷
 - [x] 😈 DA批判レビュー → Phase 0 DA #1/#2/#3/#5 を実装で担保（空=empty表示／上限トリム／破損=error／data_only維持）。下記 Phase 1 DA 追記なし（先出しで尽くした）
 
-### Phase 2: BE（attachments の Tauri command＋db.rs）
-- [ ] `db.rs`: `insert_attachment` / `list_attachments` / `update_attachment_parse`（status＋extracted_text）/ `delete_attachment`
-- [ ] `db_commands.rs`: ファイルを `app_data_dir` 配下へコピー→行作成→サイドカー抽出→更新、の `add_attachment`、`list_attachments`、`remove_attachment`。`lib.rs` 登録・`api.ts` ラッパー
-- [ ] 🔬 機械検証: `cargo test`（CRUD＋parse更新）。会議削除で添付も消える（CASCADE）
-- [ ] 😈 DA批判レビュー
+### Phase 2: BE（attachments の Tauri command＋db.rs）✅
+- [x] [db.rs](../../app/src-tauri/src/db.rs): `Attachment` 構造体＋`insert_attachment`/`list_attachments`/`update_attachment_parse`/`get_attachment_path`/`delete_attachment`
+- [x] [db_commands.rs](../../app/src-tauri/src/db_commands.rs): `add_attachment`（`app_data_dir/attachments/` へコピー→pending行→**ロック非保持で**抽出→done/error反映→確定行を返す）／`list_attachments`／`remove_attachment`（行＋ファイル後始末）。[lib.rs](../../app/src-tauri/src/lib.rs) に同期抽出ヘルパ `extract_text_blocking`（`uv run … --extract` を `output()` 待合せ→`type=extract` 行をパース）＋command登録。[api.ts](../../app/src/api.ts) に `Attachment`/`addAttachment`/`listAttachments`/`removeAttachment`
+- [x] 🔬 機械検証: `cargo test --lib` 21件パス（添付 CRUD＋parse更新＋会議削除 CASCADE＋CHECK/FK 拒否の3件追加）。実CLI `uv run … sidecar --extract <xlsx/pdf>` が結果JSON 1行を emit することを実機確認（Rust が呼ぶ経路と同一）
+- [x] 😈 DA批判レビュー → 下記 Phase 2 DA
 
 ### Phase 3: FE（S-02 取り込み／S-03 表示）
 - [ ] [S02CreateMeeting.vue](../../app/src/pages/S02CreateMeeting.vue): 資料D&D/選択・一覧・`parse_status` 表示・削除
@@ -101,6 +101,7 @@
 - 起票（親 DD-012 の子）。ユーザー提案「事前にExcel/PDFを添付→テキスト抽出」を、設計済み未実装の `attachments` 実装として正式化。DD-012-9（S-01操作強化）から分離（性質が解析パイプラインで別物のため）。抽出は完全オフライン（openpyxl / pymupdf 等）。画像PDFのOCR・docx/pptx は対象外（将来）。
 - **Phase 0 完了**: スパイクで openpyxl/pymupdf を実測（xlsx 3.7ms・pdf 7.5ms/枚、日本語・絵文字とも文字化けなし、破損PDFは例外で error 化可、両者オフライン）。**ライブラリ＝openpyxl＋pymupdf に確定**。📐詳細化＝要（上記「Phase 0 設計判断」に extract.py 公開I/F＋sidecar 契約を明記）。DA に実測由来 #5（openpyxl data_only の数式キャッシュ制約）を追記。`python` に `openpyxl`/`pymupdf` を依存追加（pyproject/uv.lock）。
 - **Phase 1 完了**: `extract.py`（純粋な抽出口）＋ sidecar `--extract` モードを実装。pytest 10件パス・ruff クリーン。**テスト時の知見**: pymupdf 既定フォントは CJK 非対応で日本語PDF生成は点字化する→PDFサンプルは ASCII、日本語通過確認は xlsx で担保（実ユーザーのフォント埋め込みPDFは抽出可）。`insert_text` はページ外をクリップ→上限トリム検証は xlsx の長文セルで実施。次＝Phase 2（attachments の Tauri/db 配線）。
+- **Phase 2 完了**: db.rs に `Attachment`＋CRUD（insert/list/update_parse/get_path/delete）、db_commands に `add_attachment`/`list_attachments`/`remove_attachment`、lib.rs に同期抽出ヘルパ `extract_text_blocking`＋command登録、api.ts にラッパー。`cargo test --lib` 21件パス（添付3件追加）。実CLI で結果JSON emit を確認。DA #6-9 追記（抽出中はDBロック非保持／会議削除時のコピーファイル残置は既知の制約として許容）。次＝Phase 3（S-02 取り込みUI／S-03 表示・D&D vs ダイアログの設計判断）。
 
 ---
 
@@ -119,3 +120,14 @@
 | 3 | **暗号化/破損ファイル**で抽出例外 | 中 | パスワード付きPDF | 異常系 | `parse_status='error'` に倒し UI へ理由表示。会議作成自体は妨げない |
 | 4 | **オフライン厳守**: ライブラリが外部フォントやネットを引かないこと | 高 | ネット遮断で抽出実行 | セキュリティ | ネット遮断環境で抽出が完結することを Phase 1 で検証（外部送信なしの担保） |
 | 5 | **openpyxl `data_only=True` は「Excelが最後に保存した計算値」を読む**。openpyxl 等で生成・未計算の数式セルは `None`（=抽出欠落）。実ユーザーが Excel で保存したファイルは計算値キャッシュがあり値が入る（Phase 0 実測で確認した制約） | 低 | プログラム生成で未計算の数式xlsxを添付 | 抽出品質 | 実運用は「ユーザーがExcelで保存した実ファイル」なので実害低。テストのサンプルは Excel 保存相当（または数式を避ける）で固定。`data_only=True` は維持（数式文字列より値が清書に有用） |
+
+### Phase 2 DA（実装後）
+
+**DA観点:** （DBロック保持／ゴミ行・ゴミファイル／長時間ブロック）
+
+| # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
+|---|-------------------|--------|----------------------|--------|------|
+| 6 | **抽出中の DB ロック保持**だと UI/他コマンドが数秒固まる（uv起動＋python import） | 高 | 添付追加中に他のDB操作 | 同時実行 | `add_attachment` は **insert→ロック解放→抽出（非保持）→再ロックで更新** の3区間に分割。抽出中はロックを持たない（コード化済み） |
+| 7 | **コピー成功後に抽出失敗でゴミファイルが残らないか** | 中 | 壊れPDFを添付 | データ保全 | 仕様: コピー失敗は行作成前に早期return（ゴミ行なし）。抽出失敗は `error` 行＋ファイル残置（再抽出の余地）で許容。行は `remove_attachment` でファイルごと消せる |
+| 8 | **会議ごと削除時、コピーした実ファイルがディスクに残る**（DB行は CASCADE で消えるがファイルは消えない） | 中 | 添付つき会議を S-01 で削除 | 後始末 | **既知の制約として許容**（オフライン端末内・容量影響小）。`remove_attachment`（個別削除）はファイルも消す。会議削除時の添付ファイル一括掃除は将来（別DD or Phase 追補） |
+| 9 | **同期ブロックの体感**: add は uv 起動込みで数秒 await | 低 | 大きめPDFを添付 | UX | 頻度の低い会議前準備操作なので同期で十分。UI は Phase 3 で `pending` スピナー表示して吸収 |
