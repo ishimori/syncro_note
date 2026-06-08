@@ -23,7 +23,109 @@ import numpy as np
 
 from synchroni_note.bench.vad_segment import frame_rms
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 16000  # 下流 STT(whisper)が要求する目標レート。収音は本レートへ正規化して渡す。
+
+
+class Resampler16k:
+    """任意レートの mono/f32 ブロックを 16k へストリーミング変換する（PyAV/libswresample）。
+
+    デバイスが 16k で開けないとき（共有フォーマットが 48k 固定の WASAPI マイク等）に、
+    デバイス対応レートで開いた音を本クラスで 16k へ落とす。内部に少量バッファを持つので
+    ``process`` の戻りサンプル数はブロックごとに前後する（アンチエイリアス整形のため）。
+    """
+
+    def __init__(self, src_rate: int) -> None:
+        from av.audio.resampler import AudioResampler
+
+        self.src_rate = src_rate
+        self._r = AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+
+    def process(self, mono_f32: "np.ndarray") -> "np.ndarray":
+        from av.audio.frame import AudioFrame
+
+        frame = AudioFrame.from_ndarray(
+            mono_f32.reshape(1, -1).astype(np.float32), format="flt", layout="mono"
+        )
+        frame.sample_rate = self.src_rate
+        out = [of.to_ndarray().reshape(-1) for of in self._r.resample(frame)]
+        return np.concatenate(out) if out else np.empty(0, dtype=np.float32)
+
+
+@dataclass
+class CapturePlan:
+    """収音ストリームの開き方（実機のレート制約に追従して 16k へ正規化する・DD-012-14系）。
+
+    `open_rate` で `sd.InputStream` を開き、`extra_settings` を渡す。`resampler` があれば
+    各ブロックを 16k へ変換してから下流（チャンカ/RMS）に渡す。レート固定をやめ、
+    「16k で開ければそのまま、無理ならデバイス対応レートで開いて 16k へ変換」を自動選択する。
+    """
+
+    open_rate: int
+    extra_settings: object | None
+    resampler: Resampler16k | None
+
+
+def _supports(device: int | None, rate: int, extra: object | None) -> bool:
+    """指定レート/設定で入力ストリームを開けるか（実機 check で判定）。"""
+    import sounddevice as sd
+
+    try:
+        sd.check_input_settings(
+            device=device, samplerate=rate, channels=1, dtype="float32", extra_settings=extra
+        )
+        return True
+    except Exception:  # noqa: BLE001  非対応レートは PaErrorCode -9997 等で例外
+        return False
+
+
+def _wasapi_autoconvert(device: int | None) -> object | None:
+    """WASAPI デバイスなら 16k 自動リサンプル設定を返す（無関係/非対応なら None）。
+
+    一部の WASAPI マイク（例: AMD Microphone Array）は共有フォーマットが 48kHz 固定で、
+    既定では ``samplerate=16000`` の InputStream が ``Invalid sample rate (-9997)`` で開けない。
+    ``WasapiSettings(auto_convert=True)`` を渡すと WASAPI 側が内部リサンプルして開ける。
+    """
+    import sounddevice as sd
+
+    try:
+        info = sd.query_devices(device if device is not None else sd.default.device[0])
+        api_name = str(sd.query_hostapis(info["hostapi"]).get("name", ""))
+    except Exception:  # noqa: BLE001  解決できなければ既定挙動に任せる
+        return None
+    if "WASAPI" not in api_name:
+        return None
+    try:
+        return sd.WasapiSettings(auto_convert=True)
+    except Exception:  # noqa: BLE001  古い PortAudio 等で未対応なら既定挙動
+        return None
+
+
+def _default_samplerate(device: int | None) -> int:
+    """デバイス既定のサンプルレート（解決不能なら 48000 を仮定）。"""
+    import sounddevice as sd
+
+    try:
+        info = sd.query_devices(device if device is not None else sd.default.device[0])
+        return int(round(float(info["default_samplerate"])))
+    except Exception:  # noqa: BLE001
+        return 48000
+
+
+def plan_capture(device: int | None) -> CapturePlan:
+    """このデバイスを 16k で収音するための開き方を決める（レート変動に自動追従）。
+
+    優先順位:
+    1. 16k 直開け（WASAPI は auto_convert で 48k 機でも 16k で開く）＝変換コスト無し。
+    2. auto_convert 無しの 16k 直開け（非 WASAPI 等）。
+    3. 上記が無理ならデバイス既定レートで開き、`Resampler16k` で 16k へソフト変換。
+    """
+    extra = _wasapi_autoconvert(device)
+    if _supports(device, SAMPLE_RATE, extra):
+        return CapturePlan(SAMPLE_RATE, extra, None)
+    if extra is not None and _supports(device, SAMPLE_RATE, None):
+        return CapturePlan(SAMPLE_RATE, None, None)
+    native = _default_samplerate(device)
+    return CapturePlan(native, None, Resampler16k(native))
 
 
 @dataclass
@@ -219,15 +321,18 @@ def capture_mic(
             print(f"[capture] {status}", file=sys.stderr, flush=True)
         q.put(indata[:, 0].copy())
 
-    blocksize = max(1, int(block_ms * SAMPLE_RATE / 1000))
+    # 実機のレート制約に追従して開く（16k 直 or 既定レート＋16k 変換）。下流は常に 16k。
+    plan = plan_capture(device)
+    blocksize = max(1, int(block_ms * plan.open_rate / 1000))
     stop_event = stop_event or threading.Event()
     with sd.InputStream(
-        samplerate=SAMPLE_RATE,
+        samplerate=plan.open_rate,
         channels=1,
         dtype="float32",
         blocksize=blocksize,
         device=device,
         callback=_cb,
+        extra_settings=plan.extra_settings,
     ):
         print("● 録音中 ... Ctrl+C で終了", file=sys.stderr, flush=True)
         while not stop_event.is_set():
@@ -237,6 +342,10 @@ def capture_mic(
                 continue
             if paused is not None and paused.is_set():
                 continue  # 一時停止中は破棄（チャンカに入れない）
+            if plan.resampler is not None:
+                block = plan.resampler.process(block)  # 既定レート → 16k へ正規化
+                if block.size == 0:
+                    continue  # 変換バッファ充填中（このブロックの出力はまだ無い）
             for ch in chunker.push(block):
                 sink(ch)
         for ch in chunker.flush():

@@ -293,7 +293,7 @@ def _run_level(args: argparse.Namespace) -> int:
     """
     import numpy as np
 
-    from synchroni_note.realtime.capture import SAMPLE_RATE
+    from synchroni_note.realtime.capture import SAMPLE_RATE, plan_capture
 
     block = max(1, int(0.1 * SAMPLE_RATE))
 
@@ -325,13 +325,16 @@ def _run_level(args: argparse.Namespace) -> int:
                     print(f"[level] {status}", file=sys.stderr, flush=True)
                 q.put(indata[:, 0].copy())
 
+            # RMS はレート非依存なので、開けるレートで開く（16k 無理なら既定レート）。変換は不要。
+            plan = plan_capture(args.device)
             with sd.InputStream(
-                samplerate=SAMPLE_RATE,
+                samplerate=plan.open_rate,
                 channels=1,
                 dtype="float32",
-                blocksize=block,
+                blocksize=max(1, int(0.1 * plan.open_rate)),
                 device=args.device,
                 callback=_cb,
+                extra_settings=plan.extra_settings,
             ):
                 while not stop_event.is_set():
                     try:
