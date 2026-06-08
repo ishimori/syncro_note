@@ -115,7 +115,31 @@ fn spawn_and_relay(
     Ok(())
 }
 
-/// サンプル音声ファイルを文字起こし（DD-011 3-C）。stdin 制御は不要。
+/// `app_settings` から STT 用の (モデルサイズ, スレッド数) を読む（DD-012-7）。
+/// 読めない/未設定なら (base, 4) に fallback して起動を止めない。
+/// S-08 は "whisper base" 形式で持つため、先頭 "whisper " を除いて faster-whisper のサイズにする。
+fn stt_settings(app: &AppHandle) -> (String, i64) {
+    let fallback = ("base".to_string(), 4_i64);
+    let state = app.state::<db_commands::DbState>();
+    let Ok(conn) = state.0.lock() else {
+        return fallback;
+    };
+    match db::get_settings(&conn) {
+        Ok(s) => {
+            let model = s
+                .stt_model
+                .as_deref()
+                .map(|m| m.strip_prefix("whisper ").unwrap_or(m).trim().to_string())
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| "base".to_string());
+            let threads = s.whisper_n_threads.filter(|&t| t > 0).unwrap_or(4);
+            (model, threads)
+        }
+        Err(_) => fallback,
+    }
+}
+
+/// サンプル音声ファイルを文字起こし（DD-011 3-C）。STTモデル/スレッドは S-08 設定に従う（DD-012-7）。
 #[tauri::command]
 fn start_transcription(
     app: AppHandle,
@@ -123,7 +147,10 @@ fn start_transcription(
     audio_path: String,
     model: Option<String>,
 ) -> Result<(), String> {
-    let model = model.unwrap_or_else(|| "base".into());
+    let (cfg_model, cfg_threads) = stt_settings(&app);
+    let model = model.unwrap_or(cfg_model); // 明示指定があれば優先、無ければ設定値
+    let threads = cfg_threads.to_string();
+    eprintln!("[stt] file model={model} threads={threads}");
     let args = vec![
         "run",
         "python",
@@ -132,6 +159,8 @@ fn start_transcription(
         audio_path.as_str(),
         "--model",
         model.as_str(),
+        "--threads",
+        threads.as_str(),
     ];
     spawn_and_relay(&app, state.inner(), &args, false)
 }
@@ -145,7 +174,10 @@ fn start_mic(
     model: Option<String>,
     simulate: Option<String>,
 ) -> Result<(), String> {
-    let model = model.unwrap_or_else(|| "base".into());
+    let (cfg_model, cfg_threads) = stt_settings(&app);
+    let model = model.unwrap_or(cfg_model); // S-08 設定の STT モデル（DD-012-7）
+    let threads = cfg_threads.to_string();
+    eprintln!("[stt] mic model={model} threads={threads} simulate={}", simulate.is_some());
     let mut args: Vec<&str> = vec!["run", "python", "-m", "synchroni_note.pipeline.sidecar"];
     match simulate.as_deref() {
         Some(path) => {
@@ -156,6 +188,8 @@ fn start_mic(
     }
     args.push("--model");
     args.push(model.as_str());
+    args.push("--threads");
+    args.push(threads.as_str());
     spawn_and_relay(&app, state.inner(), &args, true)
 }
 
@@ -245,6 +279,8 @@ pub fn run() {
             db_commands::create_meeting,
             db_commands::get_meeting_detail,
             db_commands::seed_demo,
+            db_commands::get_settings,
+            db_commands::save_settings,
         ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {

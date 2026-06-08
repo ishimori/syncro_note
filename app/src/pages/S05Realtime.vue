@@ -97,7 +97,7 @@ const startSample = async (): Promise<void> => {
   isMic.value = false;
   resetSession();
   try {
-    await invoke("start_transcription", { audioPath: "audio/sample01.wav", model: "base" });
+    await invoke("start_transcription", { audioPath: "audio/sample01.wav" }); // STTモデルは S-08 設定（DD-012-7）
   } catch (e) {
     status.value = "error";
     errorMsg.value = String(e);
@@ -109,7 +109,7 @@ const startMic = async (simulate?: string): Promise<void> => {
   if (!isTauri) return;
   resetSession();
   try {
-    await invoke("start_mic", { model: "base", simulate: simulate ?? null });
+    await invoke("start_mic", { simulate: simulate ?? null }); // STTモデル/スレッドは S-08 設定（DD-012-7）
   } catch (e) {
     status.value = "error";
     errorMsg.value = String(e);

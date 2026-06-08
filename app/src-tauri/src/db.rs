@@ -264,6 +264,68 @@ pub fn list_timeline(conn: &Connection, meeting_id: &str) -> Result<Vec<Timeline
     rows.collect()
 }
 
+// ============ app_settings（単一行・DD-012-7） ============
+
+/// アプリ設定（`app_settings` 単一行 id=1）。S-08 のフォームと1:1。
+/// `use_llm_live`/`keep_audio` はDB上 INTEGER(0/1)、ここでは bool に正規化する。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppSettings {
+    pub mic_device: Option<String>,
+    pub stt_model: Option<String>,
+    pub live_model: Option<String>,
+    pub batch_model: Option<String>,
+    pub use_llm_live: bool,
+    pub kv_cache_type: Option<String>,
+    pub whisper_n_threads: Option<i64>,
+    pub ollama_num_thread: Option<i64>,
+    pub db_path: Option<String>,
+    pub keep_audio: bool,
+    pub updated_at: String,
+}
+
+/// 設定（id=1 単一行）を取得する。行は schema.sql の既定 INSERT で必ず存在する。
+pub fn get_settings(conn: &Connection) -> Result<AppSettings> {
+    conn.query_row(
+        "SELECT mic_device, stt_model, live_model, batch_model, use_llm_live,
+                kv_cache_type, whisper_n_threads, ollama_num_thread, db_path,
+                keep_audio, updated_at
+         FROM app_settings WHERE id = 1",
+        [],
+        |row| {
+            Ok(AppSettings {
+                mic_device: row.get("mic_device")?,
+                stt_model: row.get("stt_model")?,
+                live_model: row.get("live_model")?,
+                batch_model: row.get("batch_model")?,
+                use_llm_live: row.get::<_, i64>("use_llm_live")? != 0,
+                kv_cache_type: row.get("kv_cache_type")?,
+                whisper_n_threads: row.get("whisper_n_threads")?,
+                ollama_num_thread: row.get("ollama_num_thread")?,
+                db_path: row.get("db_path")?,
+                keep_audio: row.get::<_, i64>("keep_audio")? != 0,
+                updated_at: row.get("updated_at")?,
+            })
+        },
+    )
+}
+
+/// 設定（id=1 単一行）を上書き保存する。`updated_at` は呼び出し側が確定して渡す。
+pub fn save_settings(conn: &Connection, s: &AppSettings) -> Result<()> {
+    conn.execute(
+        "UPDATE app_settings SET
+            mic_device = ?1, stt_model = ?2, live_model = ?3, batch_model = ?4,
+            use_llm_live = ?5, kv_cache_type = ?6, whisper_n_threads = ?7,
+            ollama_num_thread = ?8, db_path = ?9, keep_audio = ?10, updated_at = ?11
+         WHERE id = 1",
+        params![
+            s.mic_device, s.stt_model, s.live_model, s.batch_model,
+            s.use_llm_live as i64, s.kv_cache_type, s.whisper_n_threads,
+            s.ollama_num_thread, s.db_path, s.keep_audio as i64, s.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
 // ============ 確認用シードデータ（DD-012-3-1） ============
 
 /// 確認用デモデータを投入する（DD-012-3-1）。**本番起動経路からは呼ばない**（開発・確認時のみ）。
@@ -553,5 +615,26 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM meetings WHERE id = ?1", params!["m1"]).unwrap();
         assert!(list_participants(&conn, "m1").unwrap().is_empty()); // ON DELETE CASCADE
+    }
+
+    #[test]
+    fn settings_roundtrip_and_default() {
+        let conn = open_in_memory().unwrap();
+        // schema 既定行が読める（SSOT §3.4/§4.1 の初期値）。
+        let def = get_settings(&conn).unwrap();
+        assert_eq!(def.stt_model.as_deref(), Some("whisper base"));
+        assert_eq!(def.live_model.as_deref(), Some("qwen3:8b"));
+        assert_eq!(def.whisper_n_threads, Some(4));
+        assert!(def.use_llm_live);
+        assert!(!def.keep_audio);
+        // 変更を保存して完全往復（日本語含むデバイス名も）。
+        let mut s = def.clone();
+        s.stt_model = Some("whisper small".into());
+        s.whisper_n_threads = Some(6);
+        s.keep_audio = true;
+        s.mic_device = Some("USB会議マイク".into());
+        s.updated_at = "2026-06-08T12:00:00".into();
+        save_settings(&conn, &s).unwrap();
+        assert_eq!(get_settings(&conn).unwrap(), s);
     }
 }

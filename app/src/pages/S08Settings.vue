@@ -3,9 +3,27 @@
 // 正＝設計SSOT doc/spec/画面設計書.md ＋ doc/mock/html/S-08_settings.html。
 // ローカル実行のチューニング（マイク／モデル／コア配分／データ保存）を反映。
 // 「保存」は見た目のみ（永続化・Tauri/Node API への接続は別フェーズ）。
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
+
+// app_settings（Rust/serde の snake_case）と 1:1（DD-012-7）
+interface AppSettings {
+  mic_device: string | null;
+  stt_model: string | null;
+  live_model: string | null;
+  batch_model: string | null;
+  use_llm_live: boolean;
+  kv_cache_type: string | null;
+  whisper_n_threads: number | null;
+  ollama_num_thread: number | null;
+  db_path: string | null;
+  keep_audio: boolean;
+  updated_at: string;
+}
+// 素ブラウザ(Playwright)には Tauri ランタイムが無い → 保存/読込をスキップ。
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const router = useRouter();
 
@@ -50,6 +68,56 @@ const numThread = ref<number>(4);
 // データ
 const dbPath = ref<string>("%APPDATA%/SynchroniNote/data.sqlite");
 const keepAudio = ref<boolean>(true);
+
+// 永続化（DD-012-7）: 起動時に app_settings をロード、「保存」でDBへ書く。
+const saving = ref(false);
+const savedMsg = ref("");
+
+onMounted(async () => {
+  if (!isTauri) return;
+  try {
+    const s = await invoke<AppSettings>("get_settings");
+    if (s.mic_device) mic.value = s.mic_device;
+    if (s.stt_model) stt.value = s.stt_model;
+    if (s.live_model) live.value = s.live_model;
+    if (s.batch_model) batch.value = s.batch_model;
+    useLlmLive.value = s.use_llm_live;
+    if (s.kv_cache_type) kv.value = s.kv_cache_type;
+    if (s.whisper_n_threads != null) nThreads.value = s.whisper_n_threads;
+    if (s.ollama_num_thread != null) numThread.value = s.ollama_num_thread;
+    if (s.db_path) dbPath.value = s.db_path;
+    keepAudio.value = s.keep_audio;
+  } catch (e) {
+    savedMsg.value = "読み込み失敗: " + String(e);
+  }
+});
+
+const save = async (): Promise<void> => {
+  if (!isTauri) return;
+  saving.value = true;
+  savedMsg.value = "";
+  try {
+    const settings: AppSettings = {
+      mic_device: mic.value,
+      stt_model: stt.value,
+      live_model: live.value,
+      batch_model: batch.value,
+      use_llm_live: useLlmLive.value,
+      kv_cache_type: kv.value,
+      whisper_n_threads: nThreads.value,
+      ollama_num_thread: numThread.value,
+      db_path: dbPath.value || null,
+      keep_audio: keepAudio.value,
+      updated_at: new Date().toISOString(),
+    };
+    await invoke("save_settings", { settings });
+    savedMsg.value = "保存しました（次回の録音から反映）";
+  } catch (e) {
+    savedMsg.value = "保存に失敗: " + String(e);
+  } finally {
+    saving.value = false;
+  }
+};
 </script>
 
 <template>
@@ -65,7 +133,19 @@ const keepAudio = ref<boolean>(true);
         </q-btn>
         <q-btn flat round dense icon="arrow_back" @click="router.push('/s01')" />
         <q-toolbar-title>設定</q-toolbar-title>
-        <q-btn unelevated no-caps color="green-6" icon="save" label="保存" />
+        <q-chip v-if="savedMsg" dense color="white" text-color="primary" class="q-mr-sm">
+          {{ savedMsg }}
+        </q-chip>
+        <q-btn
+          unelevated
+          no-caps
+          color="green-6"
+          icon="save"
+          label="保存"
+          :loading="saving"
+          :disable="!isTauri"
+          @click="save"
+        />
       </q-toolbar>
     </q-header>
 

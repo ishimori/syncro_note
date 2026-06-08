@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{App, Manager, State};
 
-use crate::db::{self, Meeting, Participant, TimelineElement};
+use crate::db::{self, AppSettings, Meeting, Participant, TimelineElement};
 
 /// アプリ唯一の DB 接続（書き込み主体は Rust 単独なので 1 接続を Mutex で共有）。
 pub struct DbState(pub Mutex<rusqlite::Connection>);
@@ -100,4 +100,18 @@ pub fn get_meeting_detail(
 pub fn seed_demo(state: State<'_, DbState>, year: i32, month: u32) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     map_err(db::seed_demo_data(&conn, year, month))
+}
+
+/// 設定（app_settings 単一行）を返す（S-08 ロード／DD-012-7）。
+#[tauri::command]
+pub fn get_settings(state: State<'_, DbState>) -> Result<AppSettings, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    map_err(db::get_settings(&conn))
+}
+
+/// 設定を保存する（S-08 保存／DD-012-7）。`updated_at` は frontend が確定して渡す。
+#[tauri::command]
+pub fn save_settings(state: State<'_, DbState>, settings: AppSettings) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    map_err(db::save_settings(&conn, &settings))
 }

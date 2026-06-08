@@ -43,7 +43,9 @@ def _run_file(args: argparse.Namespace) -> int:
     """ファイル一括ストリーム（DD-011 3-C）。``stream_transcribe`` の逐次出力を流す。"""
     from synchroni_note.pipeline.transcribe import stream_transcribe
 
-    stream = stream_transcribe(args.audio, model_size=args.model, language=args.language)
+    stream = stream_transcribe(
+        args.audio, model_size=args.model, threads=args.threads, language=args.language
+    )
     # duration_s は文字起こし開始前に判明する（UIの「準備中」解除・進捗の分母に使う）。
     emit(
         {
