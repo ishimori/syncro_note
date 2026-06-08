@@ -2,7 +2,7 @@
 
 | 作成日 | 更新日 | ステータス |
 |--------|--------|------------|
-| 2026-06-07 | 2026-06-08 | 進行中（Phase 3 完了。次=Phase 4 or 別DD） |
+| 2026-06-07 | 2026-06-08 | 完了（Phase 0–3 全✅・実機実測済。本DD定義スコープ＝雛形→S-05骨格→サンプル音声の逐次文字起こし を達成。Phase 4 残り〔CRDT/Rust移植/マイク/要約/話者/DB保存〕は対象外＝別DD〔DD-012系・013・014〕へ委譲） |
 
 > アプローチ: 標準（探索的実装）。画面の「見た目の合意」は DD-009（[doc/spec/画面設計書.md](../spec/画面設計書.md)）＋ HTMLモック（[doc/mock/html/](../mock/html/)）で確定済みのため、本DDは**雛形作成＋中身（Python）との疎通**という振る舞い中心の作業。
 
@@ -164,6 +164,9 @@ DA#5 の通り **Quasar CLI の Tauri モードは存在しない**ため、「*
 - [x] 😈 **DA批判レビュー** → [Phase 3-C DA批判レビュー](#phase-3-c-da批判レビュー)
 
 ## ログ
+
+### 2026-06-08（クローズ）
+- **DD-011 をクローズ＝完了・アーカイブ**。全 Phase（0/1/2/3-A/3-B/3-C）✅完了・全タスク `[x]`・最終 3-C は実ウィンドウ実測済みで、**本DDの定義スコープ（雛形起動→S-05骨格→サンプル音声の逐次文字起こし）は達成済み**。ステータスに残っていた「次=Phase 4 or 別DD」は、Phase 4 の残り（CRDT=P4-2／Rust移植=P4-3／マイク収音／要約／話者ラベル／DB保存）が**本DDの対象外＝別DD**という当初方針どおりに決着（実在する後続DD＝DD-012系・DD-013・DD-014 が担当）。よって DD-011 自身は完了として archived/ へ。
 
 ### 2026-06-08
 - **Phase 3-C 完了（Rust中継＋S-05ライブ配線・実ウィンドウ実測）＝Phase 3 全完了**。Rust `start_transcription` が `uv run python -m …sidecar` を spawn し、stdout を reader スレッドで1行ずつ読んで `stt-meta/segment/done/error` を emit、フロント S-05 が listen→`timeline.push`。**実ウィンドウで実測**：「サンプルを流す」→ `[stt] emit stt-meta`→`stt-segment`×11→`stt-done`がコンソールに出、左タイムラインに meta+11件が1行ずつ表示（日本語化けなし／mm:ss／unrefinedバッジ／「完了（11件）」／準備中スピナー）。ダミー4件＋生成中チャンクは撤去。**後始末**：ウィンドウを閉じると `kill_sidecar` が発火、`child.kill()`（uvのみ）では孫pythonが残る恐れ（DA-新4）→ **`taskkill /T /F /PID` でプロセスツリーごとkill** に格上げし、mid-flightクローズでも uv/python 残存なし（exit 0）を実測。**検証手段の確立**：Playwright不可のため `scripts/{shot-window,click,uia}.ps1` を新設（AttachThreadInputで前面化→画面矩形を実ピクセルキャプチャ＝WebView2のGPU合成でも空白にならない／座標クリック）。既定ウィンドウが 800×600 で左ナビが折りたたみ＆狭い→ `tauri.conf.json` を **1200×800・center** に拡大（§6の指摘を実装）。次=Phase 4(同時編集/Rust移植)系は後続DD、マイク収音・話者分離・LLM整形・配布時Python同梱も各別DD。DA(3-C)→ [Phase 3-C DA批判レビュー](#phase-3-c-da批判レビュー)。
