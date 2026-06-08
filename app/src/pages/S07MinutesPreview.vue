@@ -9,6 +9,7 @@ import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import ConversationLog from "../components/ConversationLog.vue";
 import { minutesSession, resetMinutesSession } from "../session";
 import {
   completeMeeting,
@@ -264,6 +265,22 @@ const copy = async (): Promise<void> => {
                 <p v-else>{{ b.text }}</p>
               </template>
             </q-card-section>
+          </q-card>
+
+          <!-- 会話ログ（元タイムライン）: 清書のもとになった確定文字起こし＋人間メモ。
+               議事録と突き合わせて確認できるよう既定で開いておく（DD-012-2 / S-03 と同じ気泡表示を共通部品で）。 -->
+          <q-card flat bordered class="q-mt-md">
+            <q-expansion-item
+              default-opened
+              icon="forum"
+              label="会話ログ（清書のもと）"
+              :caption="`確定文字起こし＋人間メモ ・ ${minutesSession.timeline.length} 件`"
+            >
+              <q-separator />
+              <q-card-section>
+                <ConversationLog :items="minutesSession.timeline" :speakers="minutesSession.speakers" />
+              </q-card-section>
+            </q-expansion-item>
           </q-card>
 
           <div class="row q-gutter-sm justify-end q-mt-md q-mb-xl">

@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import ConversationLog from "../components/ConversationLog.vue";
 import { setActive } from "../title";
 import { minutesSession, resetMinutesSession } from "../session";
 
@@ -236,6 +237,21 @@ const abort = async (): Promise<void> => {
           <!-- ストリーミングプレビュー -->
           <div class="text-caption text-grey-7 q-mb-xs">プレビュー（ストリーミング）</div>
           <div class="preview q-pa-md">{{ preview }}<span v-if="!done && !errorMsg">▋</span></div>
+
+          <!-- 会話ログ（清書のもと）: 待ち時間に元の発話を読み返せるよう折りたたみで添える。
+               timeline は S-05 から minutesSession に積まれている（S-03/S-07 と同じ気泡表示を共通部品で）。 -->
+          <q-card flat bordered class="q-mt-md">
+            <q-expansion-item
+              icon="forum"
+              label="会話ログ（清書のもと）"
+              :caption="`確定文字起こし＋人間メモ ・ ${minutesSession.timeline.length} 件`"
+            >
+              <q-separator />
+              <q-card-section>
+                <ConversationLog :items="minutesSession.timeline" :speakers="minutesSession.speakers" />
+              </q-card-section>
+            </q-expansion-item>
+          </q-card>
 
           <div class="row justify-end q-mt-md q-mb-xl q-gutter-sm">
             <q-btn v-if="!done" flat no-caps color="grey-7" icon="close" label="中断" @click="abort" />

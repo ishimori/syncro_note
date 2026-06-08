@@ -17,6 +17,7 @@ import {
   type Attachment,
 } from "../api";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import ConversationLog from "../components/ConversationLog.vue";
 import { setActive, titleDate } from "../title";
 
 const router = useRouter();
@@ -91,11 +92,6 @@ const timeRange = (m: Meeting): string => {
   const e = m.scheduled_end ? m.scheduled_end.slice(11, 16) : "";
   return e ? `${s}–${e}` : s;
 };
-const msToStamp = (ms: number): string => {
-  const s = Math.floor(ms / 1000);
-  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-};
-
 // final_minutes(Markdown文字列) を軽量レンダリング: "## 見出し" と "- 箇条書き" を解釈。
 interface Block {
   type: "h2" | "ul" | "p";
@@ -132,39 +128,22 @@ const participantsLabel = computed<string[]>(() =>
   (detail.value?.participants ?? []).map((p) => (p.role ? `${p.name}（${p.role}）` : p.name)),
 );
 
-// 話者番号→確定名（confirmed_name ?? ai_guess_name）。speaker_mappings から導出（DD-012-11）。
-const speakerNames = computed<Record<number, string>>(() => {
-  const map: Record<number, string> = {};
-  for (const sm of detail.value?.speaker_mappings ?? []) {
-    const name = sm.confirmed_name ?? sm.ai_guess_name;
-    if (name) map[sm.speaker_id] = name;
-  }
-  return map;
-});
-
-// 表示名: メモ→📝、話者なし→「話者 ?」、確定名があれば名前、無ければ「話者 n」。
-const speakerName = (e: { kind: string; speaker_id: number | null }): string => {
-  if (e.kind === "human_memo") return "📝人間メモ";
-  if (e.speaker_id === null) return "話者 ?";
-  return speakerNames.value[e.speaker_id] ?? `話者 ${e.speaker_id}`;
-};
-
-// 話者ごとの淡い背景色（S-05 と同じ番号→色の規則。気泡は淡色で文字を読みやすく）。DD-012-11。
-const BUBBLE_COLORS = [
-  "blue-2",
-  "deep-orange-2",
-  "green-2",
-  "purple-2",
-  "teal-2",
-  "pink-2",
-  "indigo-2",
-  "brown-3",
-];
-const bubbleColor = (e: { kind: string; speaker_id: number | null }): string => {
-  if (e.kind === "human_memo") return "orange-2";
-  if (e.speaker_id === null) return "grey-2"; // 旧データ（話者なし）は従来どおり
-  return BUBBLE_COLORS[e.speaker_id % BUBBLE_COLORS.length];
-};
+// 会話ログ共通部品(ConversationLog)へ渡す最小形へ正規化（DBの timeline_elements / speaker_mappings 由来）。
+// ai_guess_name も確定名フォールバックとして渡す（DD-012-11）。
+const logItems = computed(() =>
+  (detail.value?.timeline ?? []).map((e) => ({
+    kind: e.kind,
+    speakerId: e.speaker_id,
+    tMs: e.t_ms,
+    text: e.text_raw,
+  })),
+);
+const logSpeakers = computed(() =>
+  (detail.value?.speaker_mappings ?? []).map((sm) => ({
+    speakerId: sm.speaker_id,
+    confirmedName: sm.confirmed_name ?? sm.ai_guess_name,
+  })),
+);
 
 // 添付の表示ヘルパ（DD-012-10）。
 const attachIcon = (type: string): string => (type === "xlsx" ? "grid_on" : "picture_as_pdf");
@@ -331,18 +310,7 @@ const copyMinutes = async (): Promise<void> => {
             <q-expansion-item icon="forum" label="元タイムライン（証跡）" caption="確定文字起こし＋人間メモ">
               <q-separator />
               <q-card-section>
-                <div v-if="detail.timeline.length === 0" class="text-grey-6 text-caption">
-                  タイムラインはありません。
-                </div>
-                <q-chat-message
-                  v-for="e in detail.timeline"
-                  :key="e.id"
-                  :name="speakerName(e)"
-                  :text="[e.text_raw]"
-                  :stamp="msToStamp(e.t_ms)"
-                  :sent="e.kind === 'human_memo'"
-                  :bg-color="bubbleColor(e)"
-                />
+                <ConversationLog :items="logItems" :speakers="logSpeakers" />
               </q-card-section>
             </q-expansion-item>
           </q-card>
