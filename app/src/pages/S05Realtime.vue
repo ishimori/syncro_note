@@ -5,7 +5,7 @@
 // Phase 3-C: Rust(Tauri)経由でPythonサイドカーの文字起こしを listen し、確定タイムラインへ逐次 push する。
 //   contract: stt-meta / stt-segment / stt-done / stt-error（DD-011/Phase3_実装前詳細化.md §3）
 //   注意: 素のブラウザ(Playwright)には Tauri ランタイムが無く invoke/listen が動かない → ボタンは実ウィンドウ専用。
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter, useRoute } from "vue-router";
@@ -124,6 +124,31 @@ const waitingS = computed(() => Math.max(0, Math.floor((nowMs.value - lastSegAt)
 
 // 素ブラウザ(Playwright)には Tauri ランタイムが無い → ボタンを無効化してフォールバック。
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// DD-016-1: 会話エリアの独立スクロール＋ヘッダ/操作バー固定。
+// ページ高さ＝ビューポート−ヘッダ実測高（bypassバーの増減にも追従）。タイムラインだけ内部スクロールする。
+const availH = ref("calc(100vh - 50px)");
+const measureHeader = (): void => {
+  const h = document.querySelector(".q-header")?.getBoundingClientRect().height ?? 50;
+  availH.value = `calc(100vh - ${Math.round(h)}px)`;
+};
+// 新規セグメントで最下部へ自動追従。ただしユーザーが上方を読んでいる間は追従しない。
+const scrollEl = ref<HTMLElement>();
+const atBottom = ref(true);
+const onScroll = (): void => {
+  const el = scrollEl.value;
+  if (!el) return;
+  atBottom.value = el.scrollHeight - el.clientHeight - el.scrollTop < 40;
+};
+watch(
+  () => timeline.length,
+  async () => {
+    if (!atBottom.value) return; // 上方閲覧中は追従抑止
+    await nextTick();
+    const el = scrollEl.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  },
+);
 
 // ミリ秒 → "mm:ss"
 const fmtMs = (ms: number): string => {
@@ -365,6 +390,11 @@ const endMeeting = async (): Promise<void> => {
 // Tauri イベントの購読/解除（実ウィンドウのみ）。
 const unlisteners: UnlistenFn[] = [];
 onMounted(async () => {
+  // DD-016-1: レイアウト高さの計測（Tauri でも素ブラウザでも必要）。bypassバーの増減にも追従。
+  await nextTick();
+  measureHeader();
+  window.addEventListener("resize", measureHeader);
+  watch(bypass, () => nextTick(measureHeader));
   if (!isTauri) return;
   // 整形トグルの初期値を設定（use_llm_live）から取る。読めなければ既定OFF（DD-012-4）。
   try {
@@ -451,6 +481,7 @@ onUnmounted(() => {
   unlisteners.forEach((u) => u());
   stopAlive(); // タイマー解放（案2）
   mockStop?.(); // 模擬AI停止（DD-013-1）
+  window.removeEventListener("resize", measureHeader); // DD-016-1
 });
 </script>
 
@@ -567,7 +598,10 @@ onUnmounted(() => {
 
     <!-- メイン: 確定タイムライン（主役）＋人間メモ -->
     <q-page-container>
-      <q-page class="q-pa-md" style="max-width: 1200px; margin: 0 auto">
+      <q-page class="fill-col" :style="{ height: availH }">
+        <div class="q-pa-md fill-col" style="max-width: 1200px; margin: 0 auto; width: 100%; flex: 1 1 auto">
+        <!-- 固定領域: 案内バナー＋録音操作バー（スクロールしても残る・DD-016-1） -->
+        <div style="flex: 0 0 auto">
         <q-banner dense rounded class="bg-amber-1 q-mb-sm text-grey-9">
           <template v-slot:avatar><q-icon name="info" color="amber-8" /></template>
           <b>確定文字起こしが主役</b>（即時・不可変）。LLM整形は薄い字の<b>追い上げ表示</b>。話者名をクリックすると参加者から選んで一括置換できます。
@@ -711,11 +745,14 @@ onUnmounted(() => {
           </q-chip>
         </div>
 
-        <div class="row q-col-gutter-md">
-          <!-- 左ペイン: 確定タイムライン（AI・主役・immutable） -->
-          <div class="col-12 col-md-7">
-            <q-card flat bordered>
-              <q-card-section>
+        </div>
+
+        <!-- スクロール領域: 左=確定タイムライン（独立スクロール）／右=人間メモ（DD-016-1） -->
+        <div class="fill-row" style="flex: 1 1 0; gap: 16px">
+          <!-- 左ペイン: 確定タイムライン（AI・主役・immutable）。会話エリアだけ内部スクロール -->
+          <div class="fill-col" style="flex: 1 1 0; min-width: 0">
+            <q-card flat bordered class="fill-col" style="flex: 1 1 0">
+              <div class="timeline-scroll q-pa-md" style="flex: 1 1 0" ref="scrollEl" @scroll="onScroll">
                 <div v-for="(s, i) in timeline" :key="i" class="seg">
                   <div class="row items-center">
                     <q-badge :color="speakerColor(s.speaker)" :outline="!s.confirmed" class="q-mr-sm">
@@ -771,14 +808,14 @@ onUnmounted(() => {
                     まだ文字起こしはありません。「録音開始」かサンプル、開発用「模擬AI開始」で表示できます。
                   </div>
                 </div>
-              </q-card-section>
+              </div>
             </q-card>
           </div>
 
           <!-- 右ペイン: 人間メモ（CRDT・同時編集可） DD-013 -->
-          <div class="col-12 col-md-5">
-            <q-card flat bordered>
-              <q-card-section class="q-pb-none">
+          <div class="fill-col" style="flex: 0 0 40%; min-width: 0">
+            <q-card flat bordered class="fill-col" style="flex: 1 1 0">
+              <q-card-section class="q-pb-none" style="flex: 0 0 auto">
                 <div class="row items-center">
                   <q-icon name="edit_note" color="orange-8" size="20px" class="q-mr-xs" />
                   <span class="text-subtitle2">人間メモ（同時編集）</span>
@@ -795,21 +832,22 @@ onUnmounted(() => {
                   </q-chip>
                 </div>
               </q-card-section>
-              <q-card-section>
+              <div class="q-pa-md" style="flex: 1 1 0; min-height: 0; display: flex">
                 <q-input
                   :model-value="memoText"
                   @update:model-value="onMemoInput"
                   type="textarea"
                   outlined
-                  autogrow
-                  input-style="min-height: 320px"
+                  class="fit"
+                  input-style="height: 100%; resize: none"
+                  style="width: 100%"
                   placeholder="📝 ここにメモを書けます。AIの自動追記中でも壊れません。左の文字起こしは → ボタンで取り込めます。"
                 />
-              </q-card-section>
+              </div>
             </q-card>
           </div>
         </div>
-        <div style="height: 24px" />
+        </div>
       </q-page>
     </q-page-container>
 
@@ -845,5 +883,23 @@ onUnmounted(() => {
 .seg {
   border-bottom: 1px solid #f1f5f9;
   padding: 8px 0;
+}
+/* DD-016-1: 会話エリアだけ独立スクロール。Quasar の .row/.column は flex-wrap:wrap を含み
+   縦の高さ配分が壊れるため、nowrap の専用クラスで高さを配分する（各階層に min-height:0）。 */
+.fill-col {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  min-height: 0;
+}
+.fill-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  min-height: 0;
+}
+.timeline-scroll {
+  overflow-y: auto;
+  min-height: 0;
 }
 </style>
