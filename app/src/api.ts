@@ -68,6 +68,25 @@ export const createMeeting = (
 export const getMeetingDetail = (id: string): Promise<MeetingDetail | null> =>
   invoke<MeetingDetail | null>("get_meeting_detail", { id });
 
+/** 開いていた予定に録音を紐づけて「完了」保存（S-07）。予定日・タイトルは保持し、status='completed'・
+ *  議事録本文・モデル情報を書き戻す。タイムラインは全入替（delete→insert）。時刻・idは呼び出し側で確定して渡す。 */
+export const completeMeeting = (
+  id: string,
+  finalMinutes: string,
+  batchModel: string | null,
+  generationSeconds: number | null,
+  updatedAt: string,
+  timeline: TimelineElement[],
+): Promise<void> =>
+  invoke<void>("complete_meeting", {
+    id,
+    finalMinutes,
+    batchModel,
+    generationSeconds,
+    updatedAt,
+    timeline,
+  });
+
 /** 会議を1件削除（DD-012-9）。参加者・タイムライン・添付・用語は CASCADE で連動削除。 */
 export const deleteMeeting = (id: string): Promise<void> =>
   invoke<void>("delete_meeting", { id });

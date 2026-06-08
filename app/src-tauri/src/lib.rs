@@ -117,6 +117,7 @@ fn relay_event(relay: Relay, ty: Option<&str>) -> Option<&'static str> {
         Relay::Stt => match ty {
             Some("meta") => Some("stt-meta"),
             Some("segment") => Some("stt-segment"),
+            Some("speakers") => Some("stt-speakers"), // DD-012-5 会議後一括の話者ラベル(seq→spk)
             Some("done") => Some("stt-done"),
             Some("error") => Some("stt-error"),
             Some("level") => Some("stt-level"), // S-04 入力レベル（DD-012-8）
@@ -547,6 +548,7 @@ pub fn run() {
             abort_summarize,
             db_commands::list_meetings,
             db_commands::create_meeting,
+            db_commands::complete_meeting,
             db_commands::update_meeting,
             db_commands::update_meeting_schedule,
             db_commands::delete_meeting,

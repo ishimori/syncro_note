@@ -16,6 +16,8 @@ import {
   type Meeting,
   type Attachment,
 } from "../api";
+import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import { setActive, titleDate } from "../title";
 
 const router = useRouter();
 const route = useRoute();
@@ -51,6 +53,11 @@ const loadDetail = async (id: string): Promise<void> => {
   try {
     detail.value = await getMeetingDetail(id);
     selectedId.value = id;
+    if (detail.value) {
+      const m = detail.value.meeting;
+      // ヘッダのチップとOSタイトルに「今どの議事録を開いているか」を出す。
+      setActive({ screen: "議事録詳細", name: m.title, date: titleDate(m.scheduled_start) });
+    }
     attachments.value = detail.value ? await listAttachments(id) : [];
   } catch (e) {
     errorMsg.value = String(e);
@@ -163,7 +170,8 @@ const copyMinutes = async (): Promise<void> => {
           <q-tooltip>カレンダーへ戻る</q-tooltip>
         </q-btn>
         <q-toolbar-title>議事録詳細</q-toolbar-title>
-        <q-badge color="green-6" label="completed" class="q-mr-sm" />
+        <ActiveRecordChip />
+        <q-badge color="green-6" label="completed" class="q-mx-sm" />
         <q-spinner v-if="loading" color="white" size="20px" />
       </q-toolbar>
     </q-header>

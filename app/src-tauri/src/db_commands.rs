@@ -132,6 +132,39 @@ pub fn update_meeting(
     Ok(())
 }
 
+/// 開いていた予定に録音を紐づけて「完了」保存する（S-07 / 予定→議事録の書き戻し）。
+/// 予定日(`scheduled_start`)・`title` はそのまま、`status='completed'`＋議事録本文＋モデル情報を上書きし
+/// （`db::save_final_minutes`）、タイムラインは delete→insert で全入替する。会議行＋タイムラインは
+/// **1トランザクション**で行う（途中失敗で半端を残さない）。
+/// 「開かずにその場で録音」した場合は `create_meeting`（今日の新規会議）側を使う。
+#[tauri::command]
+pub fn complete_meeting(
+    state: State<'_, DbState>,
+    id: String,
+    final_minutes: String,
+    batch_model: Option<String>,
+    generation_seconds: Option<i64>,
+    updated_at: String,
+    timeline: Vec<TimelineElement>,
+) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    map_err(db::save_final_minutes(
+        &tx,
+        &id,
+        &final_minutes,
+        batch_model.as_deref(),
+        generation_seconds,
+        &updated_at,
+    ))?;
+    map_err(db::delete_timeline(&tx, &id))?; // 既存タイムライン（あれば）を消してから入替え
+    for e in &timeline {
+        map_err(db::insert_timeline_element(&tx, e))?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 会議1件の詳細（本体＋参加者＋タイムライン）を返す（S-03 詳細）。無ければ null。
 #[tauri::command]
 pub fn get_meeting_detail(

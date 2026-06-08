@@ -5,12 +5,14 @@
 // Phase 3-C: Rust(Tauri)経由でPythonサイドカーの文字起こしを listen し、確定タイムラインへ逐次 push する。
 //   contract: stt-meta / stt-segment / stt-done / stt-error（DD-011/Phase3_実装前詳細化.md §3）
 //   注意: 素のブラウザ(Playwright)には Tauri ランタイムが無く invoke/listen が動かない → ボタンは実ウィンドウ専用。
-import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import AppNav from "../components/AppNav.vue";
-import { localIso } from "../api";
+import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import { localIso, getMeetingDetail } from "../api";
+import { setActive, titleDate } from "../title";
 import { minutesSession } from "../session";
 
 interface AiSeg {
@@ -42,6 +44,7 @@ interface SegmentEvent {
   text: string;
   t_start_ms: number;
   t_end_ms: number;
+  speaker?: string; // DD-012-5 話者ラベル（file=確定値 / mic=暫定spk0→stt-speakersで置換）
 }
 interface DoneEvent {
   count: number;
@@ -58,6 +61,10 @@ interface RefinedEvent {
 }
 interface BypassEvent {
   on: boolean;
+}
+// DD-012-5 会議後一括の話者ラベル（seq→話者ID）。mic は停止時にまとめて届く。
+interface SpeakersEvent {
+  map: Record<string, string>;
 }
 
 const leftDrawer = ref(true);
@@ -183,6 +190,25 @@ const stopMic = async (): Promise<void> => {
 
 const displayName = (s: AiSeg): string => mapping[s.speaker] || s.speaker;
 
+// 話者ごとに安定した配色（視認性向上・DD-012-5）。spk0/spk1… の末尾番号で色を決めるので、
+// 同じ話者は常に同じ色（確定や遡及ラベルで色が飛ばない）。確定済み=塗り／未確定=アウトラインで
+// 「誰か」と「確定済みか」を同時に表す。
+const SPEAKER_COLORS = [
+  "blue-6",
+  "deep-orange-6",
+  "green-6",
+  "purple-5",
+  "teal-6",
+  "pink-5",
+  "indigo-5",
+  "brown-5",
+];
+const speakerColor = (speaker: string): string => {
+  const m = speaker.match(/(\d+)$/);
+  const idx = m ? parseInt(m[1], 10) : 0;
+  return SPEAKER_COLORS[idx % SPEAKER_COLORS.length];
+};
+
 const assign = (sid: string, name: string): void => {
   mapping[sid] = name;
   timeline.forEach((x) => {
@@ -199,7 +225,29 @@ const sendMemo = (): void => {
 };
 
 const router = useRouter();
+const route = useRoute();
 const ending = ref(false);
+
+// カレンダー(S-01)で予定を開いて来た場合の紐づけ先（?id=）。録音→保存をこの予定へ書き戻す（予定日・タイトル保持）。
+const linkedMeetingId = ref<string | null>(null);
+const linkedTitle = ref<string>("");
+const linkedDate = ref<string>(""); // 紐づく予定の日付（OSウィンドウタイトル表示用）
+
+// ヘッダのチップとOSタイトルに「会議名＋日付＋録音状態」を出す（タスクバー/Alt+Tabでも録音中だと分かる）。
+watch(
+  [linkedTitle, linkedDate, status],
+  () => {
+    const state =
+      status.value === "recording" ? "● 録音中" : status.value === "paused" ? "⏸ 一時停止中" : "";
+    setActive({
+      screen: "リアルタイム議事録",
+      name: linkedTitle.value,
+      date: linkedDate.value,
+      state,
+    });
+  },
+  { immediate: true },
+);
 
 // 確定タイムライン＋人間メモを清書用テキストに整形する（メモは明示ラベルで残す）。
 const buildTranscript = (): string =>
@@ -235,8 +283,16 @@ const endMeeting = async (): Promise<void> => {
     return;
   }
   // 会議はまだDBに作らない（保存するまで未保存の「生成中」を残さない）。
-  // 清書元と会議名だけ次画面へ渡し、実際の作成は S-07 の保存時に行う。
-  minutesSession.title = `録音メモ ${localIso().slice(5, 16).replace("T", " ")}`; // 例: 録音メモ 06-08 14:30
+  // 清書元と会議名だけ次画面へ渡し、実際の作成/書き戻しは S-07 の保存時に行う。
+  if (linkedMeetingId.value) {
+    // 予定を開いて録音した: その予定に紐づけ、保存(S-07)で「完了」へ書き戻す（予定日・タイトルは保持）。
+    minutesSession.meetingId = linkedMeetingId.value;
+    minutesSession.title = linkedTitle.value || "議事録";
+  } else {
+    // 予定を開かずその場で録音した: 今日の新規会議として保存する（従来どおり）。
+    minutesSession.meetingId = null;
+    minutesSession.title = `録音メモ ${localIso().slice(5, 16).replace("T", " ")}`; // 例: 録音メモ 06-08 14:30
+  }
   minutesSession.transcript = transcript;
   // 証跡（元タイムライン）も構造化して持ち回り、保存時に timeline_elements へ書き込む。
   minutesSession.timeline = timeline.map((x) => ({
@@ -262,6 +318,20 @@ onMounted(async () => {
   } catch {
     /* 既定OFFのまま */
   }
+  // 予定から開いた場合(?id=)は紐づけ先を取得。録音→保存(S-07)でその予定を「完了」へ書き戻す。
+  const qid = typeof route.query.id === "string" ? route.query.id : "";
+  if (qid) {
+    try {
+      const d = await getMeetingDetail(qid);
+      if (d) {
+        linkedMeetingId.value = d.meeting.id;
+        linkedTitle.value = d.meeting.title;
+        linkedDate.value = titleDate(d.meeting.scheduled_start);
+      }
+    } catch {
+      /* 取得失敗時はその場録音として続行（新規保存にフォールバック） */
+    }
+  }
   unlisteners.push(
     await listen<MetaEvent>("stt-meta", (e) => {
       durationS.value = e.payload.duration_s ?? 0;
@@ -274,8 +344,8 @@ onMounted(async () => {
       const p = e.payload;
       timeline.push({
         type: "ai",
-        seq: p.seq, // refined を後から差し込むためのキー（DD-012-4）
-        speaker: "Speaker_0", // 話者分離は範囲外（暫定固定）
+        seq: p.seq, // refined / 話者ラベルを後から差し込むためのキー（DD-012-4 / 012-5）
+        speaker: p.speaker ?? "Speaker_0", // 実話者（無ければ暫定固定）DD-012-5
         t: fmtMs(p.t_start_ms),
         text: p.text,
         refined: null, // 追い上げ整形（stt-refined）が後から入る
@@ -303,6 +373,18 @@ onMounted(async () => {
     await listen<BypassEvent>("stt-bypass", (e) => {
       bypass.value = e.payload.on;
     }),
+    // DD-012-5: 会議後一括の話者ラベル。既存セグメントの話者を seq で後追い置換する（mic 経路）。
+    await listen<SpeakersEvent>("stt-speakers", (e) => {
+      const m = e.payload.map;
+      timeline.forEach((x) => {
+        if (x.type !== "ai") return;
+        const spk = m[String(x.seq)];
+        if (spk) {
+          x.speaker = spk;
+          x.confirmed = mapping[spk] != null; // 既に人間確定済みの話者なら確定表示を維持
+        }
+      });
+    }),
   );
 });
 onUnmounted(() => {
@@ -323,7 +405,8 @@ onUnmounted(() => {
           <q-tooltip>画面メニュー</q-tooltip>
         </q-btn>
         <span v-if="status === 'recording'" class="rec-dot q-mr-sm" />
-        <q-toolbar-title>設計レビュー{{ status === "recording" ? " — 録音中" : "" }}</q-toolbar-title>
+        <q-toolbar-title>リアルタイム議事録</q-toolbar-title>
+        <ActiveRecordChip />
         <q-chip dense color="white" text-color="primary" icon="schedule" :label="elapsed" class="q-mr-sm" />
         <q-chip
           dense
@@ -533,7 +616,7 @@ onUnmounted(() => {
               <template v-else>
                 <div class="seg">
                   <div class="row items-center">
-                    <q-badge :color="s.confirmed ? 'secondary' : 'grey-5'" class="q-mr-sm">
+                    <q-badge :color="speakerColor(s.speaker)" :outline="!s.confirmed" class="q-mr-sm">
                       <span class="spk">{{ displayName(s) }}</span>
                       <q-icon name="arrow_drop_down" />
                       <q-menu>

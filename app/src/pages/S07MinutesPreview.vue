@@ -1,14 +1,17 @@
 <script setup lang="ts">
 // S-07 議事録プレビュー（清書完了）— DD-012-2 Phase 2: 実データ結線。
 // S-06 から渡された清書Markdown(minutesSession)を表示し、編集トグルでソース編集に切替える。
-// 「保存」で初めて DB に書く（create_meeting で status='completed' の会議を1件作成）→ カレンダー(S-01)へ。
+// 「保存」で初めて DB に書く → カレンダー(S-01)へ。予定を開いて録音した場合(minutesSession.meetingId 有)は
+// complete_meeting でその予定を「完了」へ書き戻し（予定日・タイトル保持）、それ以外は create_meeting で今日の新規会議を作成。
 // 未保存ではDBに何も残さない＝中断/離脱で「生成中」の幽霊会議を作らない設計。
 // 注意: invoke は実ウィンドウ(Tauri)専用。素ブラウザ(Playwright)では保存できない。
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
+import ActiveRecordChip from "../components/ActiveRecordChip.vue";
 import { minutesSession, resetMinutesSession } from "../session";
-import { createMeeting, localIso, type Meeting, type TimelineElement } from "../api";
+import { completeMeeting, createMeeting, localIso, type Meeting, type TimelineElement } from "../api";
+import { setActive } from "../title";
 
 const router = useRouter();
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -21,6 +24,9 @@ const model = minutesSession.batchModel;
 const seconds = minutesSession.generationSeconds;
 const saving = ref(false);
 const saveError = ref("");
+
+// OSウィンドウのタイトルに保存対象の議事録名を出す（直接遷移でセッションが空なら画面名のまま）。
+if (minutesSession.title) setActive({ screen: "議事録プレビュー", name: minutesSession.title });
 
 // 清書結果があれば保存・表示できる（直接遷移などは案内に切替）。
 const hasData = computed(() => !!minutesSession.finalMarkdown);
@@ -75,39 +81,54 @@ const save = async (): Promise<void> => {
   saveError.value = "";
   try {
     const now = localIso();
-    const id = crypto.randomUUID();
-    // 保存時に会議を「完了」で1件だけ作成する（ここまでDBには何も書かない＝幽霊会議を作らない）。
-    const meeting: Meeting = {
-      id,
-      title: minutesSession.title || "議事録",
-      agenda: null,
-      place: null,
-      scheduled_start: now,
-      scheduled_end: null,
-      actual_start: now,
-      actual_end: now,
-      status: "completed",
-      final_minutes: src.value,
-      batch_model: minutesSession.batchModel,
-      generation_seconds: minutesSession.generationSeconds,
-      audio_path: null,
-      created_at: now,
-      updated_at: now,
-    };
-    // 証跡（元タイムライン）も一緒に保存する（S-03 詳細で表示される）。
-    const timeline: TimelineElement[] = minutesSession.timeline.map((it, i) => ({
-      id: crypto.randomUUID(),
-      meeting_id: id,
-      seq: i,
-      kind: it.kind,
-      speaker_id: it.speakerId,
-      t_ms: it.tMs,
-      text_raw: it.text,
-      text_refined: null,
-      is_refined: false,
-      created_at: now,
-    }));
-    await createMeeting(meeting, [], timeline);
+    // 証跡（元タイムライン）を保存先の meeting_id 付きで構造化する（S-03 詳細で表示される）。
+    const buildTimeline = (meetingId: string): TimelineElement[] =>
+      minutesSession.timeline.map((it, i) => ({
+        id: crypto.randomUUID(),
+        meeting_id: meetingId,
+        seq: i,
+        kind: it.kind,
+        speaker_id: it.speakerId,
+        t_ms: it.tMs,
+        text_raw: it.text,
+        text_refined: null,
+        is_refined: false,
+        created_at: now,
+      }));
+
+    if (minutesSession.meetingId) {
+      // 予定を開いて録音した: その予定を「完了」へ書き戻す（予定日・タイトルは保持＝今日へずらさない）。
+      const linkedId = minutesSession.meetingId;
+      await completeMeeting(
+        linkedId,
+        src.value,
+        minutesSession.batchModel,
+        minutesSession.generationSeconds,
+        now, // updated_at（予定日 scheduled_start は保持＝今日へずらさない）
+        buildTimeline(linkedId),
+      );
+    } else {
+      // 予定を開かずその場で録音した: 今日の新規会議を「完了」で1件作成する（従来どおり）。
+      const id = crypto.randomUUID();
+      const meeting: Meeting = {
+        id,
+        title: minutesSession.title || "議事録",
+        agenda: null,
+        place: null,
+        scheduled_start: now,
+        scheduled_end: null,
+        actual_start: now,
+        actual_end: now,
+        status: "completed",
+        final_minutes: src.value,
+        batch_model: minutesSession.batchModel,
+        generation_seconds: minutesSession.generationSeconds,
+        audio_path: null,
+        created_at: now,
+        updated_at: now,
+      };
+      await createMeeting(meeting, [], buildTimeline(id));
+    }
     resetMinutesSession();
     router.push("/s01");
   } catch (e) {
@@ -138,6 +159,7 @@ const copy = async (): Promise<void> => {
         </q-btn>
         <q-icon name="fact_check" size="24px" class="q-mr-sm" />
         <q-toolbar-title>議事録プレビュー（清書完了）</q-toolbar-title>
+        <ActiveRecordChip />
         <q-toggle
           v-if="hasData"
           v-model="editMode"

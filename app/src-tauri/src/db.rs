@@ -305,6 +305,15 @@ pub fn insert_timeline_element(conn: &Connection, e: &TimelineElement) -> Result
     Ok(())
 }
 
+/// 会議のタイムラインを全削除する（既存予定へ録音を紐づけ保存する際の入替え用 / S-07）。
+pub fn delete_timeline(conn: &Connection, meeting_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM timeline_elements WHERE meeting_id = ?1",
+        params![meeting_id],
+    )?;
+    Ok(())
+}
+
 /// 会議のタイムラインを seq 昇順で返す（S-03 詳細・清書入力）。
 pub fn list_timeline(conn: &Connection, meeting_id: &str) -> Result<Vec<TimelineElement>> {
     let mut stmt = conn.prepare(
@@ -638,6 +647,40 @@ mod tests {
         assert_eq!(got.final_minutes.as_deref(), Some("# 議事録\n- 決定事項"));
         assert_eq!(got.batch_model.as_deref(), Some("gemma4:26b"));
         assert_eq!(got.generation_seconds, Some(42));
+    }
+
+    #[test]
+    fn complete_writeback_keeps_scheduled_date_and_replaces_timeline() {
+        // 回帰(本バグ): 開いていた予定(6/14)に録音を紐づけ「完了」保存しても、保存日(今日6/8)へずらさない。
+        // complete_meeting コマンドの中身＝save_final_minutes＋delete_timeline＋insert を直接検証する。
+        let conn = open_in_memory().unwrap();
+        insert_meeting(&conn, &meeting("m1", "本日の定例", "2026-06-14T10:00:00", "active")).unwrap();
+        let el = |id: &str, text: &str| TimelineElement {
+            id: id.into(),
+            meeting_id: "m1".into(),
+            seq: 0,
+            kind: "ai_transcription".into(),
+            speaker_id: None,
+            t_ms: 0,
+            text_raw: text.into(),
+            text_refined: None,
+            is_refined: false,
+            created_at: "2026-06-08T14:25:00".into(),
+        };
+        insert_timeline_element(&conn, &el("old", "予定段階の古い行")).unwrap();
+
+        // 書き戻し（保存実行は今日 6/8 14:25）: 会議行を完了化し、タイムラインを差し替える。
+        save_final_minutes(&conn, "m1", "## 決定事項\n- 仕様確定", Some("gemma4:26b"), Some(120), "2026-06-08T14:25:00").unwrap();
+        delete_timeline(&conn, "m1").unwrap();
+        insert_timeline_element(&conn, &el("new0", "録音された発話")).unwrap();
+
+        let got = get_meeting(&conn, "m1").unwrap().unwrap();
+        assert_eq!(got.scheduled_start, "2026-06-14T10:00:00"); // 6/14 のまま＝今日へずれない（本バグの肝）
+        assert_eq!(got.status, "completed");
+        assert_eq!(got.final_minutes.as_deref(), Some("## 決定事項\n- 仕様確定"));
+        let tl = list_timeline(&conn, "m1").unwrap();
+        assert_eq!(tl.len(), 1); // 古い行は消えて1件に入替わっている
+        assert_eq!(tl[0].text_raw, "録音された発話");
     }
 
     #[test]

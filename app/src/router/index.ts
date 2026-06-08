@@ -5,6 +5,7 @@
 // ハッシュ履歴（/#/s05）を使う（リロードや asset パスで 404 にならない）。
 import { createRouter, createWebHashHistory } from "vue-router";
 import type { RouteRecordRaw } from "vue-router";
+import { setActive } from "../title";
 import S01Calendar from "../pages/S01Calendar.vue";
 import S02CreateMeeting from "../pages/S02CreateMeeting.vue";
 import S03MinutesDetail from "../pages/S03MinutesDetail.vue";
@@ -31,4 +32,22 @@ const routes: RouteRecordRaw[] = [
 export const router = createRouter({
   history: createWebHashHistory(),
   routes,
+});
+
+// 画面ごとの基本タイトル（OSタイトル＋アプリ内チップの土台）。会議を扱う画面は、各画面が
+// 読み込んだ会議名＋日付で setActive を上書きする（その前段の既定値としてここで必ずセットする）。
+const SCREEN_TITLE: Record<string, string> = {
+  "/s01": "カレンダー",
+  "/s02": "会議の作成",
+  "/s03": "議事録詳細",
+  "/s04": "プリフライト",
+  "/s05": "リアルタイム議事録",
+  "/s06": "議事録を生成中",
+  "/s07": "議事録プレビュー",
+  "/s08": "設定",
+};
+router.afterEach((to) => {
+  // 画面の基本タイトルをセットしつつ、アクティブ会議をリセット（前画面のチップを残さない）。
+  // 会議を扱う画面は、各画面が読み込み後に setActive で会議名＋日付を上書きする。
+  setActive({ screen: SCREEN_TITLE[to.path] ?? "" });
 });

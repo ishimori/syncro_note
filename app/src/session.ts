@@ -13,6 +13,9 @@ export interface TimelineRow {
 
 export interface MinutesSession {
   title: string; // 会議名（清書プロンプトの前提に渡す）
+  // 紐づく既存予定のid。カレンダー(S-01)で予定を開いて録音した場合に S-05 が設定し、保存(S-07)で
+  // その予定を「完了」へ書き戻す（予定日・タイトルを保持）。開かずにその場で録音した場合は null＝今日の新規会議を作成。
+  meetingId: string | null;
   transcript: string; // 清書元（確定テキスト＋人間メモ・gemmaへ渡す連結文字列）
   timeline: TimelineRow[]; // 証跡（保存時に timeline_elements として書き込む構造化データ）
   finalMarkdown: string; // 清書結果（summary-done のMarkdown・正規化済み）
@@ -22,6 +25,7 @@ export interface MinutesSession {
 
 export const minutesSession = reactive<MinutesSession>({
   title: "",
+  meetingId: null,
   transcript: "",
   timeline: [],
   finalMarkdown: "",
@@ -32,6 +36,7 @@ export const minutesSession = reactive<MinutesSession>({
 /** 保存完了後などにセッションを空に戻す（次の会議へ持ち越さない）。 */
 export const resetMinutesSession = (): void => {
   minutesSession.title = "";
+  minutesSession.meetingId = null;
   minutesSession.transcript = "";
   minutesSession.timeline = [];
   minutesSession.finalMarkdown = "";

@@ -9,6 +9,8 @@ import { useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppNav from "../components/AppNav.vue";
+import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import { setActive } from "../title";
 import { minutesSession, resetMinutesSession } from "../session";
 
 const router = useRouter();
@@ -45,6 +47,7 @@ onMounted(async () => {
     noInput.value = true;
     return;
   }
+  if (minutesSession.title) setActive({ screen: "議事録を生成中", name: minutesSession.title }); // 今どの会議を清書中か
   unlisteners.push(
     await listen<{ model: string }>("summary-meta", (e) => {
       minutesSession.batchModel = e.payload.model;
@@ -143,7 +146,8 @@ const abort = async (): Promise<void> => {
         <q-toolbar-title>
           {{ done ? "清書が完了しました" : errorMsg ? "清書に失敗しました" : "議事録を生成中…" }}
         </q-toolbar-title>
-        <q-badge v-if="done" color="green-5" label="completed へ" />
+        <ActiveRecordChip />
+        <q-badge v-if="done" color="green-5" label="completed へ" class="q-ml-sm" />
       </q-toolbar>
     </q-header>
 

@@ -11,7 +11,8 @@ import { useRouter, useRoute } from "vue-router";
 import { useQuasar } from "quasar";
 import { open } from "@tauri-apps/plugin-dialog";
 import AppNav from "../components/AppNav.vue";
-import { setAppTitle } from "../title";
+import ActiveRecordChip from "../components/ActiveRecordChip.vue";
+import { setActive } from "../title";
 import {
   createMeeting,
   updateMeeting,
@@ -123,6 +124,13 @@ const pickFiles = async (): Promise<void> => {
   }
 };
 
+// 「この内容で会議を開始」: 編集中の予定なら id を S-04→S-05 へ引き継ぎ、録音→清書→事前資料統合を
+// その予定に紐づける（DD-012-10）。新規（未保存）はそのまま ad-hoc 録音へ。
+const startMeeting = (): void => {
+  const id = editingBase.value?.id;
+  router.push(id ? { path: "/s04", query: { id } } : "/s04");
+};
+
 const removeSaved = async (id: string): Promise<void> => {
   try {
     await removeAttachment(id);
@@ -172,12 +180,12 @@ const isEditing = computed<boolean>(() => editingBase.value !== null);
 // 完了会議は参加者をロック（変更すると timeline_elements.confirmed_participant_id の話者リンクが切れるため）。
 const participantsLocked = computed<boolean>(() => editingBase.value?.status === "completed");
 
-// OSウィンドウのタイトルに「会議名＋日付」を出す（今どの予定を編集/作成中かを一目で）。入力にも追従させる。
+// ヘッダのチップとOSタイトルに「会議名＋日付」を出す（今どの予定を編集/作成中かを一目で）。入力にも追従させる。
 watch(
   [title, date, isEditing],
   () => {
     const name = title.value.trim() || (isEditing.value ? "（無題）" : "新規会議");
-    setAppTitle(`${name} ${date.value}・${isEditing.value ? "会議の編集" : "会議の作成"}`);
+    setActive({ screen: isEditing.value ? "会議の編集" : "会議の作成", name, date: date.value });
   },
   { immediate: true },
 );
@@ -322,7 +330,8 @@ const save = async (): Promise<void> => {
         </q-btn>
         <q-btn flat round dense icon="arrow_back" @click="router.push('/s01')" />
         <q-toolbar-title>{{ isEditing ? "会議の編集" : "会議の作成・事前登録" }}</q-toolbar-title>
-        <q-badge :color="isEditing ? 'teal' : 'blue-5'" :label="isEditing ? '編集' : '新規'" />
+        <ActiveRecordChip />
+        <q-badge :color="isEditing ? 'teal' : 'blue-5'" :label="isEditing ? '編集' : '新規'" class="q-ml-sm" />
       </q-toolbar>
     </q-header>
 
@@ -541,7 +550,7 @@ const save = async (): Promise<void> => {
             color="primary"
             icon="play_arrow"
             label="この内容で会議を開始"
-            @click="router.push('/s04')"
+            @click="startMeeting"
           />
         </div>
       </q-page>
