@@ -11,7 +11,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter, useRoute } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
-import { localIso, getMeetingDetail } from "../api";
+import { localIso, getMeetingDetail, listAttachments, type Attachment } from "../api";
 import { setActive, titleDate } from "../title";
 import { minutesSession } from "../session";
 
@@ -78,8 +78,11 @@ const elapsed = ref("00:00:00");
 const latency = ref(0);
 const drops = ref(0);
 
-const participants = ["鈴木（PM）", "佐藤（エンジニア）", "田中（デザイナー）"];
-const vocab = ["Qwen", "Tauri", "SQLite", "SynchroniNote", "diarization"];
+// 右パネルは紐づく予定(?id=)の実データを表示する（DD-012-10/予定→ライブ）。ad-hoc 録音では空。
+const participants = ref<string[]>([]); // 参加者「名（役職）」
+const agenda = ref<string>(""); // アジェンダ本文
+const vocab = ref<string[]>([]); // 専門用語（未永続化のため当面空）
+const attachments = ref<Attachment[]>([]); // 事前資料（添付）
 
 // 確定話者マッピング（人間確定 > AI推測）
 const mapping = reactive<Record<string, string>>({});
@@ -327,6 +330,10 @@ onMounted(async () => {
         linkedMeetingId.value = d.meeting.id;
         linkedTitle.value = d.meeting.title;
         linkedDate.value = titleDate(d.meeting.scheduled_start);
+        // 右パネルを実データで満たす（参加者・アジェンダ・事前資料）。ダミーを排し実際の前提を見せる。
+        participants.value = d.participants.map((p) => (p.role ? `${p.name}（${p.role}）` : p.name));
+        agenda.value = d.meeting.agenda ?? "";
+        attachments.value = await listAttachments(qid);
       }
     } catch {
       /* 取得失敗時はその場録音として続行（新規保存にフォールバック） */
@@ -444,10 +451,16 @@ onUnmounted(() => {
         <q-list padding>
           <q-item-label header>アジェンダ</q-item-label>
           <q-item>
-            <q-item-section>1. 基本設計のレビュー<br />2. 話者分離方式の確定<br />3. DD候補</q-item-section>
+            <q-item-section>
+              <div v-if="agenda" style="white-space: pre-wrap">{{ agenda }}</div>
+              <div v-else class="text-grey-6">（未設定）</div>
+            </q-item-section>
           </q-item>
           <q-separator spaced />
           <q-item-label header>参加者</q-item-label>
+          <q-item v-if="participants.length === 0">
+            <q-item-section class="text-grey-6">（登録なし）</q-item-section>
+          </q-item>
           <q-item v-for="p in participants" :key="p">
             <q-item-section avatar>
               <q-avatar size="28px" color="secondary" text-color="white">{{ p.charAt(0) }}</q-avatar>
@@ -455,14 +468,39 @@ onUnmounted(() => {
             <q-item-section>{{ p }}</q-item-section>
           </q-item>
           <q-separator spaced />
-          <q-item-label header>専門用語</q-item-label>
-          <q-item>
+          <!-- 事前資料（DD-012-10）: この会議に添付した Excel/PDF を一覧表示 -->
+          <q-item-label header>事前資料</q-item-label>
+          <q-item v-if="attachments.length === 0">
+            <q-item-section class="text-grey-6">（なし）</q-item-section>
+          </q-item>
+          <q-item v-for="a in attachments" :key="a.id">
+            <q-item-section avatar>
+              <q-icon
+                :name="a.file_type === 'xlsx' ? 'grid_on' : 'picture_as_pdf'"
+                :color="a.file_type === 'xlsx' ? 'green-7' : 'red-7'"
+              />
+            </q-item-section>
             <q-item-section>
-              <div class="q-gutter-xs">
-                <q-badge v-for="w in vocab" :key="w" outline color="primary" :label="w" />
-              </div>
+              <q-item-label lines="1">{{ a.file_name }}</q-item-label>
+              <q-item-label caption>
+                <span v-if="a.parse_status === 'done' && a.extracted_text">清書に反映されます</span>
+                <span v-else-if="a.parse_status === 'error'" class="text-negative">抽出失敗</span>
+                <span v-else-if="a.parse_status === 'pending'">解析中…</span>
+                <span v-else class="text-orange-9">本文なし</span>
+              </q-item-label>
             </q-item-section>
           </q-item>
+          <template v-if="vocab.length">
+            <q-separator spaced />
+            <q-item-label header>専門用語</q-item-label>
+            <q-item>
+              <q-item-section>
+                <div class="q-gutter-xs">
+                  <q-badge v-for="w in vocab" :key="w" outline color="primary" :label="w" />
+                </div>
+              </q-item-section>
+            </q-item>
+          </template>
           <q-separator spaced />
           <q-item>
             <q-item-section>

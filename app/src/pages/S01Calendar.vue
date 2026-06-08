@@ -155,7 +155,8 @@ const openMeeting = (m: CellMeeting): void => {
   if (m.status === "completed") router.push({ path: "/s03", query: { id: m.id } });
   else if (m.status === "active" || m.status === "generating")
     router.push({ path: "/s05", query: { id: m.id } });
-  else router.push("/s02");
+  // 予定(scheduled)は id を渡して実データ（参加者・資料など）を読み込む（id 無しだと空の新規になる不具合）。
+  else router.push({ path: "/s02", query: { id: m.id } });
 };
 
 // 編集（DD-012-9 Phase 4）: S-02 を編集モード（?id=）で開く。

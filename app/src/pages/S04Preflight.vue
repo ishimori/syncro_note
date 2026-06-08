@@ -5,7 +5,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 
 // app_settings の必要フィールド（DD-012-7）
@@ -21,6 +21,9 @@ interface LevelEvent {
 }
 
 const router = useRouter();
+const route = useRoute();
+// 予定(scheduled)から開始したときの会議id。録音→清書まで持ち回り、事前資料を清書に統合する（DD-012-10）。
+const linkedId = typeof route.query.id === "string" ? route.query.id : "";
 const leftDrawer = ref(true);
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -36,7 +39,8 @@ const liveModel = ref("qwen3:8b");
 
 // 入力レベル（実測 RMS → 0-100 表示）と無音ガード
 const level = ref(0);
-const detected = ref(false); // 直近に入力ありか（無音時は録音開始を抑止＝事故防止）
+const detected = ref(false); // 直近に入力ありか（メータ脇のライブ表示用）
+const everDetected = ref(false); // 一度でも入力を検出したか（録音開始の解放条件・無音で戻さない）
 const SILENCE_RMS = 0.015; // これ未満は無音扱い（暗騒音を弾く小さめ閾値・つまみ）
 let lastVoiceAt = 0;
 
@@ -60,7 +64,10 @@ onMounted(async () => {
     await listen<LevelEvent>("stt-level", (e) => {
       const rms = e.payload.rms;
       level.value = Math.min(100, Math.round(rms * 800));
-      if (rms >= SILENCE_RMS) lastVoiceAt = Date.now();
+      if (rms >= SILENCE_RMS) {
+        lastVoiceAt = Date.now();
+        everDetected.value = true; // 一度検出したら以後は録音開始を許可し続ける
+      }
       detected.value = Date.now() - lastVoiceAt < 1500;
     }),
   );
@@ -79,7 +86,8 @@ onUnmounted(() => {
 
 const startRecording = (): void => {
   if (isTauri) void invoke("stop_mic").catch(() => undefined); // level を止めてから録音へ
-  router.push("/s05");
+  // 予定から開始した場合は id を S-05 へ引き継ぐ（その予定に録音・清書・資料を紐づける）。
+  router.push(linkedId ? { path: "/s05", query: { id: linkedId } } : "/s05");
 };
 </script>
 
@@ -177,10 +185,10 @@ const startRecording = (): void => {
             color="red-6"
             icon="fiber_manual_record"
             label="録音開始"
-            :disable="isTauri && !detected"
+            :disable="isTauri && !everDetected"
             @click="startRecording"
           >
-            <q-tooltip v-if="isTauri && !detected">マイク入力を検出してから開始できます</q-tooltip>
+            <q-tooltip v-if="isTauri && !everDetected">マイク入力を検出してから開始できます</q-tooltip>
           </q-btn>
         </div>
       </q-page>
