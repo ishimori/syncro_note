@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter, useRoute } from "vue-router";
 import AppNav from "../components/AppNav.vue";
+import { getMeetingDetail } from "../api";
 
 // app_settings の必要フィールド（DD-012-7）
 interface AppSettings {
@@ -26,6 +27,11 @@ const route = useRoute();
 const linkedId = typeof route.query.id === "string" ? route.query.id : "";
 const leftDrawer = ref(true);
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// 会議サマリ（Bug#5/DD-012-12）: 予定(?id=)の実データを表示。固定文言を排す。ad-hoc 録音では既定文。
+const meetingTitle = ref("その場で録音");
+const meetingParticipants = ref<string[]>([]);
+const meetingAgenda = ref("");
 
 // マイク（実デバイス列挙は別DD。当面は設定の既定 or 固定候補）
 const mics: string[] = ["既定 - マイク配列 (Realtek)", "USB会議マイク", "ヘッドセット"];
@@ -48,6 +54,21 @@ const unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
   if (!isTauri) return;
+  // 予定から来た場合(?id=)は会議サマリを実データで満たす（Bug#5: 固定文言の排除）。
+  if (linkedId) {
+    try {
+      const d = await getMeetingDetail(linkedId);
+      if (d) {
+        meetingTitle.value = d.meeting.title;
+        meetingParticipants.value = d.participants.map((p) =>
+          p.role ? `${p.name}（${p.role}）` : p.name,
+        );
+        meetingAgenda.value = d.meeting.agenda ?? "";
+      }
+    } catch {
+      /* 取得失敗時は既定表示のまま */
+    }
+  }
   // 既定を app_settings から反映
   try {
     const s = await invoke<AppSettings>("get_settings");
@@ -115,11 +136,16 @@ const startRecording = (): void => {
           無音録音・モデル未ロードの事故を防ぐため、開始前に確認します。
         </q-banner>
 
-        <!-- 会議サマリ -->
+        <!-- 会議サマリ（DD-012-12 Bug#5: 予定の実データを表示） -->
         <q-card flat bordered class="q-mb-md">
           <q-card-section>
-            <div class="text-subtitle1 text-weight-medium">設計レビュー</div>
-            <div class="text-grey-7">参加者: 鈴木（PM）・佐藤（エンジニア）／用語: Qwen, Tauri, SQLite</div>
+            <div class="text-subtitle1 text-weight-medium">{{ meetingTitle }}</div>
+            <div class="text-grey-7">
+              参加者: {{ meetingParticipants.length ? meetingParticipants.join("・") : "（登録なし）" }}
+            </div>
+            <div v-if="meetingAgenda" class="text-grey-7 q-mt-xs" style="white-space: pre-wrap">
+              アジェンダ: {{ meetingAgenda }}
+            </div>
           </q-card-section>
         </q-card>
 
