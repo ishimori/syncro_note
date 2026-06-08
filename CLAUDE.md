@@ -95,5 +95,19 @@
 - 制約: 素のブラウザに Tauri ランタイム（`window.__TAURI__`/invoke/イベント）は無く、Rust/Pythonサイドカー連携部は Playwright では動かない（実ウィンドウで確認 or ダミーデータで見た目のみ）。
 - 注意: `tauri dev` 停止後も vite(node) が残り **ポート1420を占有**しがち→ `Get-NetTCPConnection -LocalPort 1420 | Stop-Process -Force` で解放してから再起動。
 
+#### ⭐ 実Tauriウィンドウを Claude から操作する（CDP直結・invoke/Rust/実DB込み）
+
+> **Playwright の「見た目だけ」制約を越える手段。** `start-app.sh` で起動した *実ウィンドウ* には WebView2 のデバッグ窓口(CDP `localhost:9222`)が開く。そこへ直結すれば、**画面操作だけでなく `invoke`→Rust→実SQLite まで本物**を Claude が叩ける（実機検証済み）。手動操作を頼む前に、まずこれを使う。
+
+- 前提: `bash scripts/start-app.sh` で起動（同スクリプトが `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` を自動付与）。
+- 操作はすべて `node scripts/tauri-cdp.mjs <cmd>`（リポジトリルートから）:
+  - `snapshot` — 操作可能な要素を一覧（画面を“読む”。CSSセレクタ選びの起点）
+  - `text "<sel>"` / `click "<sel>"` — 要素のテキスト取得 / クリック（Vue/Quasarのハンドラが発火）
+  - `eval "<js>"` — 任意JS評価（Promiseは解決して返す。例: `location.hash`）
+  - `invoke <cmd> '<json>'` — Rustコマンドを直接呼ぶ。例: `invoke list_meetings '{"year":2026,"month":6}'`
+  - `shot <out.png>` — 実ウィンドウのPNG → `Read` で目視
+- 使い分け: **見た目だけ**なら従来どおり Playwright MCP（`localhost:1420`）が手軽。**Tauriランタイム/Rust/実DBが絡む確認・操作**は `tauri-cdp.mjs`。
+- 注意: `invoke` の削除/保存系は**実DBに効く**。確認には読み取り系(`list_*`/`get_*`)を使う。ピクセル精度のドラッグ等は `shot-window.ps1` + 座標系の手段で。
+
 ### セキュリティ要件
 - 機密情報の外部送信禁止。AI処理は完全ローカルで完結すること。

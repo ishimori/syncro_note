@@ -36,6 +36,12 @@ if powershell.exe -NoProfile -Command "if (Get-NetTCPConnection -LocalPort $PORT
   powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort $PORT -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
 fi
 
+# --- WebView2 のデバッグ窓口(CDP)を開く ---
+# これにより、起動した *実ウィンドウ* に Claude から直結して invoke/Rust/実DB 込みで
+# 操作・確認できる（操作は scripts/tauri-cdp.mjs）。dev 専用で配布物には影響しない。
+export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
+
 echo "[2/2] Tauri アプリを起動します（初回は Rust コンパイルで数分かかります）..."
 echo "      ウィンドウが開いたら準備完了。停止は Ctrl+C または stop-app.sh"
+echo "      CDP(操作窓口): http://localhost:9222 — 操作は node scripts/tauri-cdp.mjs"
 exec npm run tauri dev

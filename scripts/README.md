@@ -12,6 +12,7 @@ SynchroniNote の開発・運用を助ける小さなスクリプト置き場。
 | 〃 を停止＋ポート1420を解放 | `bash scripts/stop-app.sh` | bash |
 | 〃 を配布用にビルド（インストーラ生成） | `bash scripts/build-app.sh` | bash |
 | 実ウィンドウをPNGで撮る | `powershell -ExecutionPolicy Bypass -File scripts/shot-window.ps1 -Process app -Out c:/tmp/x.png` | ps1 |
+| 実Tauriウィンドウを操作(invoke/Rust込み) | `node scripts/tauri-cdp.mjs snapshot` 等 | mjs |
 | DD索引(DD-INDEX.md)を再生成 | `bash scripts/dd-index-gen.sh` | bash |
 | doc索引(INDEX_MAP.md)のズレ検査 | `bash scripts/doc-index-check.sh [--strict]` | bash |
 
@@ -24,6 +25,7 @@ SynchroniNote の開発・運用を助ける小さなスクリプト置き場。
 - **start-app.sh** — `npm run tauri dev` で開発起動。初回は Rust コンパイルで数分。起動前に残った古いポート1420(vite)を自動解放。停止は Ctrl+C か `stop-app.sh`。
 - **stop-app.sh** — `tauri dev` 停止後に残りがちな vite(node) を止め、ポート1420を解放。**このリポジトリの `target` 配下の `app.exe` だけ**を終了（無関係な app.exe は巻き込まない）。
 - **build-app.sh** — `npm run tauri build` で配布物を生成。成果物: `app/src-tauri/target/release/bundle/`（`nsis/*-setup.exe`, `msi/*.msi`）。
+- **tauri-cdp.mjs** — 起動中の **実Tauriウィンドウ(WebView2)を Claude から操作**するドライバ。Playwright では届かない `invoke`→Rust→実SQLite まで本物を叩ける。`start-app.sh` がデバッグ窓口(CDP `localhost:9222`)を開く前提。サブコマンド: `snapshot`(画面を読む)／`text`／`click`／`eval`／`invoke <cmd> '<json>'`／`shot <png>`。詳細はファイル先頭コメントと `CLAUDE.md`「UI確認」節。
 
 ## B. 実Tauriウィンドウのスクショ … PowerShell
 
