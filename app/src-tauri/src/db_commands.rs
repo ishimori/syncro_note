@@ -93,10 +93,17 @@ pub fn create_meeting(
     Ok(())
 }
 
-/// 会議を1件削除する（S-01 削除 / DD-012-9）。子（参加者・タイムライン・添付・用語）は CASCADE で連動削除。
+/// 会議を1件削除する（S-01 削除 / DD-012-9・ad-hoc仮会議の破棄 / DD-016）。
+/// 子行（参加者・タイムライン・添付・用語）は CASCADE で連動削除。ただし添付の **コピー済み物理ファイル**は
+/// CASCADE では消えないため、行削除の前に best-effort で remove_file する（DD-016 レビュー: ファイルリーク対処）。
 #[tauri::command]
 pub fn delete_meeting(state: State<'_, DbState>, id: String) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if let Ok(atts) = db::list_attachments(&conn, &id) {
+        for a in atts {
+            let _ = std::fs::remove_file(&a.local_path); // best-effort（無くてもOK）
+        }
+    }
     map_err(db::delete_meeting(&conn, &id))
 }
 

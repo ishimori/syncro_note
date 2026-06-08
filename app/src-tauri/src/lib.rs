@@ -747,7 +747,15 @@ pub fn run() {
                 let state = app.state::<db_commands::DbState>();
                 // ロックガードを内側ブロックで落としてから（所有値 Result を取り出す）結果を処理する。
                 let swept = match state.0.lock() {
-                    Ok(conn) => crate::db::delete_unsaved_adhoc_meetings(&conn),
+                    Ok(conn) => {
+                        // 添付のコピー済み物理ファイルを先に後始末（CASCADE は DB 行のみ消す・DD-016 レビュー）。
+                        if let Ok(paths) = crate::db::list_unsaved_adhoc_attachment_paths(&conn) {
+                            for p in paths {
+                                let _ = std::fs::remove_file(p); // best-effort
+                            }
+                        }
+                        crate::db::delete_unsaved_adhoc_meetings(&conn)
+                    }
                     Err(_) => Ok(0),
                 };
                 match swept {

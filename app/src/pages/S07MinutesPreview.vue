@@ -5,7 +5,7 @@
 // complete_meeting でその予定を「完了」へ書き戻し（予定日・タイトル保持）、それ以外は create_meeting で今日の新規会議を作成。
 // 未保存ではDBに何も残さない＝中断/離脱で「生成中」の幽霊会議を作らない設計。
 // 注意: invoke は実ウィンドウ(Tauri)専用。素ブラウザ(Playwright)では保存できない。
-import { ref, computed } from "vue";
+import { ref, computed, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
@@ -14,6 +14,7 @@ import { minutesSession, resetMinutesSession } from "../session";
 import {
   completeMeeting,
   createMeeting,
+  deleteMeeting,
   localIso,
   type Meeting,
   type Participant,
@@ -177,6 +178,15 @@ const copy = async (): Promise<void> => {
     /* 一部環境でクリップボード不可。無視 */
   }
 };
+
+// DD-016-3/案C: 保存せず S-07 を離脱したら、ad-hoc 仮会議を掃除する（save 成功時は resetMinutesSession 済みで
+// isTempMeeting=false のため発火しない＝未保存離脱のときだけ削除＋セッション破棄。コードレビュー指摘の取りこぼし対処）。
+onUnmounted(() => {
+  if (isTauri && minutesSession.isTempMeeting && minutesSession.meetingId) {
+    void deleteMeeting(minutesSession.meetingId).catch(() => undefined);
+    resetMinutesSession();
+  }
+});
 </script>
 
 <template>

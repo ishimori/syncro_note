@@ -213,6 +213,18 @@ pub fn delete_unsaved_adhoc_meetings(conn: &Connection) -> Result<usize> {
     Ok(n)
 }
 
+/// 未保存 ad-hoc 仮会議に紐づく添付のコピー済みファイルパス一覧を返す（DD-016 レビュー: スイープ前のファイル後始末用）。
+/// ON DELETE CASCADE は DB 行しか消さないため、行を消す前にここでパスを集めて物理ファイルを削除する。
+pub fn list_unsaved_adhoc_attachment_paths(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.local_path FROM attachments a
+         JOIN meetings m ON m.id = a.meeting_id
+         WHERE m.status = 'active' AND m.final_minutes IS NULL AND m.scheduled_end IS NULL",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
 /// 会議のステータスのみ更新（scheduled→active→generating→completed/aborted）。
 pub fn update_meeting_status(
     conn: &Connection,
@@ -720,6 +732,24 @@ mod tests {
         let mut done = meeting("done", "完了会議", "2026-06-03T10:00:00", "completed");
         done.final_minutes = Some("## 決定事項".into());
         insert_meeting(&conn, &done).unwrap();
+
+        // 添付: 仮会議(adhoc)と予定由来active(active2)に1件ずつ。スイープ前のファイル後始末対象は adhoc のみ。
+        let att = |id: &str, mid: &str, path: &str| Attachment {
+            id: id.into(),
+            meeting_id: mid.into(),
+            file_name: "x.xlsx".into(),
+            local_path: path.into(),
+            file_type: "xlsx".into(),
+            extracted_text: None,
+            parse_status: "done".into(),
+            created_at: "2026-06-14T10:00:00".into(),
+        };
+        insert_attachment(&conn, &att("a-adhoc", "adhoc", "/tmp/adhoc.xlsx")).unwrap();
+        insert_attachment(&conn, &att("a-active2", "active2", "/tmp/active2.xlsx")).unwrap();
+
+        // 後始末対象のパスは ad-hoc 仮会議の添付のみ（予定由来 active は対象外）。
+        let paths = list_unsaved_adhoc_attachment_paths(&conn).unwrap();
+        assert_eq!(paths, vec!["/tmp/adhoc.xlsx".to_string()]);
 
         let removed = delete_unsaved_adhoc_meetings(&conn).unwrap();
         assert_eq!(removed, 1, "掃除されるのは ad-hoc 仮会議の1件だけ");
