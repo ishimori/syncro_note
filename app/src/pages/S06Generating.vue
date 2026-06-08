@@ -4,7 +4,7 @@
 // summary-* イベント（モデル切替→生成）を listen して進捗・ストリームを表示する。
 //   契約: summary-meta / summary-status / summary-progress / summary-done / summary-error
 // 注意: invoke/listen は実ウィンドウ(Tauri)専用。素ブラウザ(Playwright)では起動できない。
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -30,6 +30,9 @@ const preview = ref("");
 const done = ref(false);
 const errorMsg = ref("");
 const noInput = ref(false); // 直接遷移などで清書元が無い
+
+// 会話ログの表示件数（本文が空の行は ConversationLog 側で除外するため、件数も非空で数える）。
+const logCount = computed(() => minutesSession.timeline.filter((t) => t.text?.trim()).length);
 
 let acc = ""; // progress の delta を連結
 const unlisteners: UnlistenFn[] = [];
@@ -244,7 +247,7 @@ const abort = async (): Promise<void> => {
             <q-expansion-item
               icon="forum"
               label="会話ログ（清書のもと）"
-              :caption="`確定文字起こし＋人間メモ ・ ${minutesSession.timeline.length} 件`"
+              :caption="`確定文字起こし＋人間メモ ・ ${logCount} 件`"
             >
               <q-separator />
               <q-card-section>

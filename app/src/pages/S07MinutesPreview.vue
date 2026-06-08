@@ -39,6 +39,9 @@ if (minutesSession.title) setActive({ screen: "議事録プレビュー", name: 
 // 清書結果があれば保存・表示できる（直接遷移などは案内に切替）。
 const hasData = computed(() => !!minutesSession.finalMarkdown);
 
+// 会話ログの表示件数（本文が空の行は ConversationLog 側で除外するため、件数も非空で数える）。
+const logCount = computed(() => minutesSession.timeline.filter((t) => t.text?.trim()).length);
+
 // 最小Markdownレンダラ（## 見出し / - 箇条書き / - [ ] チェック / 段落）。清書の固定3節向け。
 // v-html を使わず（XSS安全）、ブロック配列にして v-for で描画する。未知行は段落で安全に流す。
 interface Block {
@@ -274,7 +277,7 @@ const copy = async (): Promise<void> => {
               default-opened
               icon="forum"
               label="会話ログ（清書のもと）"
-              :caption="`確定文字起こし＋人間メモ ・ ${minutesSession.timeline.length} 件`"
+              :caption="`確定文字起こし＋人間メモ ・ ${logCount} 件`"
             >
               <q-separator />
               <q-card-section>

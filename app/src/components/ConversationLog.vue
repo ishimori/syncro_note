@@ -18,6 +18,9 @@ interface LogSpeaker {
 
 const props = defineProps<{ items: LogItem[]; speakers?: LogSpeaker[] }>();
 
+// 本文が空（時刻だけ）の行は表示しない。模擬AI/無音などで空の確定行が混ざることがあるため。
+const rows = computed<LogItem[]>(() => props.items.filter((e) => e.text?.trim()));
+
 const msToStamp = (ms: number): string => {
   const s = Math.floor(ms / 1000);
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -55,9 +58,9 @@ const bubbleColor = (e: LogItem): string => {
 </script>
 
 <template>
-  <div v-if="items.length === 0" class="text-grey-6 text-caption">会話ログはありません。</div>
+  <div v-if="rows.length === 0" class="text-grey-6 text-caption">会話ログはありません。</div>
   <q-chat-message
-    v-for="(e, i) in items"
+    v-for="(e, i) in rows"
     :key="i"
     :name="speakerName(e)"
     :text="[e.text]"
