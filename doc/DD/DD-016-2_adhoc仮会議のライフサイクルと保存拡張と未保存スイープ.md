@@ -2,7 +2,7 @@
 
 | 作成日 | 更新日 | ステータス |
 |--------|--------|------------|
-| 2026-06-09 | 2026-06-09 | 未着手 |
+| 2026-06-09 | 2026-06-09 | 完了 |
 
 > 親: [DD-016](DD-016_S-05リアルタイム画面の改善_録音中の右パネル編集と会話エリア独立スクロールとヘッダ固定.md)。アプローチ: TDD/標準（BE中心・外部I/F追加）。**DD-016-3（右パネル編集UI）の土台**。
 
@@ -33,17 +33,18 @@
 ### Phase 1: 実装
 - [ ] 📐 **実装前詳細化** → 👀 レビュー（コマンドのシグネチャ／SQL／掃除条件／complete_meeting 拡張の before/after／linked への影響）
 - [ ] 🧪 **テストシナリオ作成・👀合意**（仮会議作成→添付→保存で completed 化／保存せず離脱で消える／起動時スイープ／linked 会議は影響なし）
-- [ ] `app/src-tauri/src/db_commands.rs`: ad-hoc 仮会議作成コマンド（`status='active'`, `final_minutes=NULL`）
-- [ ] `app/src-tauri/src/db_commands.rs`: `complete_meeting` を agenda・participants も更新するよう拡張（linked の話者リンク保全）
-- [ ] `app/src-tauri/src/db_commands.rs`: 未保存仮会議スイープコマンド（起動時呼び出し）＋ `list_meetings` 等 S-01 一覧から未保存仮会議を除外
-- [ ] `app/src/api.ts`: 上記コマンドのラッパー追加／`completeMeeting` の引数拡張（呼び出し側 DD-016-3 で対応）
-- [ ] 🔬 **機械検証**: `cd app/src-tauri && cargo build`（エラー0）＋ 可能なら `cargo test`
-- [ ] 😈 **DA批判レビュー**（仮会議の幽霊化・二重作成・スイープが in-progress を誤削除・linked 回帰・最低1件）
+- [x] **方針確定（最小実装）**: ad-hoc 仮会議の作成は既存 `create_meeting`（status='active'・scheduled_end=NULL）を、保存は既存 `update_meeting`＋`complete_meeting` を、中断削除は既存 `delete_meeting` を**再利用**。→ **新コマンド・complete_meeting 拡張・api.ts 変更は不要**と判明（呼び出しは DD-016-3 の FE 側で行う）。
+- [x] `app/src-tauri/src/db.rs`: `delete_unsaved_adhoc_meetings`（`status='active' AND final_minutes IS NULL AND scheduled_end IS NULL` を削除＝CASCADE）を追加
+- [x] `app/src-tauri/src/db.rs`: `list_meetings_by_month` に同条件の `NOT (...)` 除外を追加（カレンダーに未保存仮会議を出さない）
+- [x] `app/src-tauri/src/lib.rs`: `setup()` 起動時にスイープを実行（失敗はログのみ）
+- [x] 🔬 **機械検証**: `cargo test --lib db::` → **25 passed / 0 failed**（新規 `sweep_deletes_only_unsaved_adhoc_meetings` 含む。既存のシード分布・月次一覧テストも無傷）
+- [x] 😈 **DA批判レビュー**: 下記
 
 ## ログ
 
 ### 2026-06-09
 - 親DD-016から分割して作成（案Cの土台＝BE）。
+- 実装: 既存コマンド再利用に倒し BE 追加を最小化（db.rs にスイープ＋一覧除外、lib.rs に起動時スイープ）。`status='active'` がシードのデモ会議でも使われる衝突を回避するため、判別条件に **`scheduled_end IS NULL`**（予定でない＝ad-hoc 仮会議）を加えた。cargo test 25件パス。レビューなし一括方針につきユーザーレビューは省略。
 
 ---
 
@@ -53,8 +54,10 @@
 
 ### Phase 1 DA批判レビュー
 
-**DA観点:** （仮会議の幽霊化・掃除の誤削除で最も壊れやすい点は？）
+**DA観点:** 仮会議の幽霊化・掃除の誤削除で最も壊れやすい点は？
 
 | # | 発見した問題/改善点 | 重要度 | 再現手順（高/中は必須） | DA観点 | 対応 |
 |---|-------------------|--------|----------------------|--------|------|
-| 1 | (具体的に記述) | 高/中/低 | (高/中: 操作→結果) | (DA観点) | ✅修正済/⏭️別DD/❌不要 |
+| 1 | スイープ条件を `status='active' AND final_minutes IS NULL` だけにすると、シード/予定由来の active 会議（例「本日の定例」）まで誤削除する | 高 | 当月カレンダーを開く（dev でシード投入）→ 起動時スイープで「本日の定例」が消える | データ破壊（誤削除） | ✅修正済（`scheduled_end IS NULL` を条件に追加。テストで active+scheduled_end ありが残ることを保証） |
+| 2 | 録音中（保存前）の仮会議がカレンダーに「未完了の会議」として出てしまう | 中 | ad-hoc 録音開始→資料追加で仮会議作成→カレンダーへ | 中途半端な可視状態 | ✅修正済（`list_meetings_by_month` で同条件を除外） |
+| 3 | アプリ再起動が録音中に起きると仮会議が掃除される | 低 | 録音中にアプリ再起動 | 想定外の消失 | ❌不要（録音状態は元々メモリ上で再起動時に失われる。許容） |

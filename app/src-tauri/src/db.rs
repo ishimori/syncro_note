@@ -184,15 +184,33 @@ pub fn get_meeting(conn: &Connection, id: &str) -> Result<Option<Meeting>> {
 }
 
 /// 指定年月（ローカルISO8601前提）の会議を scheduled_start 昇順で返す（S-01 カレンダー）。
+/// 未保存の ad-hoc 仮会議（DD-016-2/案C: 録音中だけ status='active'・未清書・予定なし）は除外し、
+/// カレンダーに中途半端な会議を出さない。判別は `delete_unsaved_adhoc_meetings` と同条件。
 pub fn list_meetings_by_month(conn: &Connection, year: i32, month: u32) -> Result<Vec<Meeting>> {
     let prefix = format!("{:04}-{:02}%", year, month); // 'YYYY-MM%' 前方一致
     let mut stmt = conn.prepare(
         "SELECT * FROM meetings
          WHERE scheduled_start LIKE ?1
+           AND NOT (status = 'active' AND final_minutes IS NULL AND scheduled_end IS NULL)
          ORDER BY scheduled_start ASC",
     )?;
     let rows = stmt.query_map(params![prefix], Meeting::from_row)?;
     rows.collect()
+}
+
+/// 未保存の ad-hoc 仮会議を掃除する（DD-016-2/案C・アプリ起動時に呼ぶ）。
+/// 録音中に事前資料を清書へ反映するため会議を `status='active'` で仮作成するが、保存(S-07)されず
+/// 残った一時会議をここで削除し「未保存の幽霊会議」を残さない。
+/// 判別: `status='active'` かつ `final_minutes` 無し（未清書）かつ `scheduled_end` 無し（予定でない）。
+/// 予定から開始した active 会議（scheduled_end あり）やシードの「本日の定例」は対象外。
+/// 子（参加者/タイムライン/添付/用語）は ON DELETE CASCADE で連動削除。削除件数を返す。
+pub fn delete_unsaved_adhoc_meetings(conn: &Connection) -> Result<usize> {
+    let n = conn.execute(
+        "DELETE FROM meetings
+         WHERE status = 'active' AND final_minutes IS NULL AND scheduled_end IS NULL",
+        [],
+    )?;
+    Ok(n)
 }
 
 /// 会議のステータスのみ更新（scheduled→active→generating→completed/aborted）。
@@ -682,6 +700,38 @@ mod tests {
             created_at: "2026-06-08T10:00:00".into(),
             updated_at: "2026-06-08T10:00:00".into(),
         }
+    }
+
+    #[test]
+    fn sweep_deletes_only_unsaved_adhoc_meetings() {
+        // DD-016-2/案C: 未保存の ad-hoc 仮会議（active・未清書・予定なし）だけ掃除し、
+        // 予定（scheduled）・予定由来の active（scheduled_end あり）・完了済みは残す。
+        let conn = open_in_memory().unwrap();
+
+        // 掃除対象: ad-hoc 仮会議（active / final_minutes=None / scheduled_end=None）
+        insert_meeting(&conn, &meeting("adhoc", "録音メモ", "2026-06-14T10:00:00", "active")).unwrap();
+        // 残す: 予定（scheduled）
+        insert_meeting(&conn, &meeting("sched", "予定", "2026-06-19T10:00:00", "scheduled")).unwrap();
+        // 残す: 予定由来の active（scheduled_end あり＝シード「本日の定例」相当）
+        let mut active_sched = meeting("active2", "本日の定例", "2026-06-14T10:00:00", "active");
+        active_sched.scheduled_end = Some("2026-06-14T11:00:00".into());
+        insert_meeting(&conn, &active_sched).unwrap();
+        // 残す: 完了済み（active ではない）
+        let mut done = meeting("done", "完了会議", "2026-06-03T10:00:00", "completed");
+        done.final_minutes = Some("## 決定事項".into());
+        insert_meeting(&conn, &done).unwrap();
+
+        let removed = delete_unsaved_adhoc_meetings(&conn).unwrap();
+        assert_eq!(removed, 1, "掃除されるのは ad-hoc 仮会議の1件だけ");
+        assert!(get_meeting(&conn, "adhoc").unwrap().is_none(), "ad-hoc 仮会議は削除される");
+        assert!(get_meeting(&conn, "sched").unwrap().is_some());
+        assert!(get_meeting(&conn, "active2").unwrap().is_some(), "予定由来の active は残す");
+        assert!(get_meeting(&conn, "done").unwrap().is_some());
+
+        // カレンダー一覧でも ad-hoc 仮会議は出ない（active2 は出る）。
+        let june = list_meetings_by_month(&conn, 2026, 6).unwrap();
+        assert!(june.iter().all(|m| m.id != "adhoc"), "一覧に ad-hoc 仮会議は含めない");
+        assert!(june.iter().any(|m| m.id == "active2"), "予定由来の active は一覧に出す");
     }
 
     #[test]

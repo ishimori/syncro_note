@@ -741,6 +741,21 @@ pub fn run() {
         .setup(|app| {
             // DB を開いて DbState を manage（DD-012-3 Phase 2）。失敗時は起動を止める。
             db_commands::init(app)?;
+            // DD-016-2/案C: 前回の未保存 ad-hoc 仮会議（録音中だけ status='active' で仮作成し、
+            // 保存されずに残ったもの）を起動時に掃除する。失敗は致命的でないのでログのみ。
+            {
+                let state = app.state::<db_commands::DbState>();
+                // ロックガードを内側ブロックで落としてから（所有値 Result を取り出す）結果を処理する。
+                let swept = match state.0.lock() {
+                    Ok(conn) => crate::db::delete_unsaved_adhoc_meetings(&conn),
+                    Err(_) => Ok(0),
+                };
+                match swept {
+                    Ok(n) if n > 0 => eprintln!("[db] swept {n} unsaved ad-hoc meeting(s)"),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[db] sweep failed: {e}"),
+                }
+            }
             // DD-012-6: 配布時に同梱した sidecar exe を解決し、以降の起動経路を切替える
             // （開発時は見つからず None＝uv 経路）。解決は一度だけ。
             let _ = SIDECAR_EXE.set(resolve_sidecar_exe(app.handle()));
