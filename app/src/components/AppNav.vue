@@ -24,16 +24,19 @@ interface NavItem {
   // 実機ロジック未接続（モック表示のみ）の画面は WIP バッジを出す。
   // 画面が本実装できたら false にする（= バッジが消える）。
   wip: boolean;
+  // 製品の恒久ナビは S-01(ホーム)＋S-08(設定=ヘッダ⚙)だけ。S-02〜S-07 はモーダル/フローで
+  // 開くため本来メニューに出ない開発用の導線 → DEV バッジで明示する（将来 dev ビルド限定で出し分け）。
+  dev: boolean;
 }
 const NAV: NavItem[] = [
-  { id: "S-01", name: "カレンダー", icon: "calendar_month", to: "/s01", wip: true },
-  { id: "S-02", name: "会議作成", icon: "event_note", to: "/s02", wip: true },
-  { id: "S-03", name: "議事録詳細", icon: "description", to: "/s03", wip: true },
-  { id: "S-04", name: "プリフライト", icon: "mic", to: "/s04", wip: true },
-  { id: "S-05", name: "リアルタイム", icon: "graphic_eq", to: "/s05", wip: true },
-  { id: "S-06", name: "生成中", icon: "auto_awesome", to: "/s06", wip: true },
-  { id: "S-07", name: "プレビュー", icon: "fact_check", to: "/s07", wip: true },
-  { id: "S-08", name: "設定", icon: "settings", to: "/s08", wip: true },
+  { id: "S-01", name: "カレンダー", icon: "calendar_month", to: "/s01", wip: true, dev: false },
+  { id: "S-02", name: "会議作成", icon: "event_note", to: "/s02", wip: true, dev: true },
+  { id: "S-03", name: "議事録詳細", icon: "description", to: "/s03", wip: true, dev: true },
+  { id: "S-04", name: "プリフライト", icon: "mic", to: "/s04", wip: true, dev: true },
+  { id: "S-05", name: "リアルタイム", icon: "graphic_eq", to: "/s05", wip: true, dev: true },
+  { id: "S-06", name: "生成中", icon: "auto_awesome", to: "/s06", wip: true, dev: true },
+  { id: "S-07", name: "プレビュー", icon: "fact_check", to: "/s07", wip: true, dev: true },
+  { id: "S-08", name: "設定", icon: "settings", to: "/s08", wip: true, dev: false },
 ];
 </script>
 
@@ -64,10 +67,16 @@ const NAV: NavItem[] = [
           <q-item-label>{{ n.id }}</q-item-label>
           <q-item-label caption>{{ n.name }}</q-item-label>
         </q-item-section>
-        <q-item-section side v-if="n.wip">
-          <q-badge color="orange-5" text-color="white" label="WIP" class="text-weight-bold">
-            <q-tooltip>未実装（モック表示のみ）</q-tooltip>
-          </q-badge>
+        <q-item-section side v-if="n.dev || n.wip">
+          <div class="column items-end q-gutter-xs">
+            <!-- DEV: 製品メニューには出さない画面（モーダル/フローで開く）。開発用の導線。 -->
+            <q-badge v-if="n.dev" color="red-6" text-color="white" label="DEV" class="text-weight-bold">
+              <q-tooltip>製品ではメニューに出さない画面（モーダル/フローで開く）。開発用の導線。</q-tooltip>
+            </q-badge>
+            <q-badge v-if="n.wip" color="orange-5" text-color="white" label="WIP" class="text-weight-bold">
+              <q-tooltip>未実装（モック表示のみ）</q-tooltip>
+            </q-badge>
+          </div>
         </q-item-section>
       </q-item>
     </q-list>
