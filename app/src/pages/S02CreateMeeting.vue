@@ -6,11 +6,12 @@
 //   id・各時刻は frontend で確定して渡す（Rust DB層の純関数設計に合わせる）。
 // 編集モード（?id=）: 既存会議を読み込み、`update_meeting` で更新。完了会議は参加者を保護（話者リンク保全）。
 // 新規（?date=YYYY-MM-DD）: 空きセルからの遷移で日付を初期化する。
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useQuasar } from "quasar";
 import { open } from "@tauri-apps/plugin-dialog";
 import AppNav from "../components/AppNav.vue";
+import { setAppTitle } from "../title";
 import {
   createMeeting,
   updateMeeting,
@@ -170,6 +171,16 @@ const editingBase = ref<Meeting | null>(null); // 読み込んだ会議（id/sta
 const isEditing = computed<boolean>(() => editingBase.value !== null);
 // 完了会議は参加者をロック（変更すると timeline_elements.confirmed_participant_id の話者リンクが切れるため）。
 const participantsLocked = computed<boolean>(() => editingBase.value?.status === "completed");
+
+// OSウィンドウのタイトルに「会議名＋日付」を出す（今どの予定を編集/作成中かを一目で）。入力にも追従させる。
+watch(
+  [title, date, isEditing],
+  () => {
+    const name = title.value.trim() || (isEditing.value ? "（無題）" : "新規会議");
+    setAppTitle(`${name} ${date.value}・${isEditing.value ? "会議の編集" : "会議の作成"}`);
+  },
+  { immediate: true },
+);
 
 // 起動時: ?id= があれば編集モードで読み込み、なければ ?date= で日付を初期化。
 onMounted(async () => {
@@ -547,7 +558,7 @@ const save = async (): Promise<void> => {
           <q-btn flat round dense icon="close" v-close-popup />
         </q-card-section>
         <q-card-section class="text-caption text-grey-7 q-pt-xs">
-          AIの清書に渡るのと同じ抽出テキストです（xlsx=シート/セル, pdf=本文）。
+          AIの清書に渡るのと同じ内容です。シート/ページごとに見出し・寸法・表へ構造化しています。
         </q-card-section>
         <q-separator />
         <q-card-section>

@@ -44,22 +44,33 @@ def _make_pdf(path: Path, text: str) -> Path:
     return path
 
 
-def test_extract_xlsx_keeps_japanese_and_sheet_heading(tmp_path: Path) -> None:
+def test_extract_xlsx_structured_with_sheet_dims_and_table(tmp_path: Path) -> None:
     p = _make_xlsx(
         tmp_path / "s.xlsx",
         [["項目", "担当"], ["予算確認", "石森"], ["リリース", "2026年7月"]],
     )
     r = extract_text(p)
-    assert "# 議題" in r.text  # シート見出し
-    assert "予算確認\t石森" in r.text  # 行はタブ連結・日本語そのまま
+    assert "（Excel・1シート: 議題）" in r.text  # ファイル概要
+    assert "## シート「議題」（3行 × 2列）" in r.text  # シート見出し＋寸法
+    assert "| 項目 | 担当 |" in r.text  # Markdownテーブル（ヘッダ）
+    assert "| 予算確認 | 石森 |" in r.text  # データ行・日本語そのまま
     assert "2026年7月" in r.text
     assert not r.truncated and not r.empty
     assert r.chars == len(r.text)
 
 
-def test_extract_pdf_reads_text_layer(tmp_path: Path) -> None:
+def test_extract_xlsx_escapes_pipe_in_cells(tmp_path: Path) -> None:
+    # セル内の | はテーブルを壊すのでエスケープする。
+    p = _make_xlsx(tmp_path / "pipe.xlsx", [["a|b", "c"]])
+    r = extract_text(p)
+    assert "a\\|b" in r.text
+
+
+def test_extract_pdf_structured_with_page_heading(tmp_path: Path) -> None:
     p = _make_pdf(tmp_path / "s.pdf", "Budget 12,000,000 JPY\nOwner Ishimori")
     r = extract_text(p)
+    assert "（PDF・1ページ）" in r.text  # 概要
+    assert "## p.1" in r.text  # ページ見出し
     assert "Budget 12,000,000 JPY" in r.text
     assert "Owner Ishimori" in r.text
     assert not r.empty
@@ -67,7 +78,7 @@ def test_extract_pdf_reads_text_layer(tmp_path: Path) -> None:
 
 def test_extract_type_inferred_from_suffix(tmp_path: Path) -> None:
     p = _make_pdf(tmp_path / "doc.pdf", "hello")
-    assert extract_text(p, file_type=None).text.strip() == "hello"
+    assert "hello" in extract_text(p, file_type=None).text
 
 
 def test_unsupported_extension_raises(tmp_path: Path) -> None:
