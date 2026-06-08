@@ -2,7 +2,7 @@
 
 | 作成日 | 更新日 | ステータス |
 |--------|--------|------------|
-| 2026-06-08 | 2026-06-08 | 進行中（Phase 0-4 実装/テスト完了・コミット済。残=Phase 5 実機E2E〔添付→抽出→表示→清書反映の一周〕） |
+| 2026-06-08 | 2026-06-08 | **完了**（Phase 0-4＋Phase 5 実機E2E完了。実会議で `materials=true` 確認＝Excel本文が清書プロンプトに反映） |
 
 > 親DD: [DD-012 製品化（中核機能の実装と実用化）](DD-012_製品化_中核機能の実装と実用化.md)
 > アプローチ: 標準（探索的実装。抽出パイプラインは Python サイドカーで価値検証→ホットパスは後でRust移植の方針に沿う）
@@ -102,6 +102,7 @@
 ## ログ
 
 ### 2026-06-08
+- **Phase 5 完了＝DDクローズ**: 実会議でユーザーが「予定を開く→（Excel添付）→録音→会議終了→清書」を一周。`start-app` ログに `[summary] start batch=gemma4:26b … chars=482 materials=true` を確認＝**Excel抽出本文が実際の清書プロンプトに渡った**ことを実証。S-07 で gemma4:26b の清書（要約/決定事項/TODO）が10秒で生成。これで DD-012-10 の DoD（添付→オフライン抽出→表示→**清書反映**）を実機で全充足。ステータスを**完了**へ。
 - 起票（親 DD-012 の子）。ユーザー提案「事前にExcel/PDFを添付→テキスト抽出」を、設計済み未実装の `attachments` 実装として正式化。DD-012-9（S-01操作強化）から分離（性質が解析パイプラインで別物のため）。抽出は完全オフライン（openpyxl / pymupdf 等）。画像PDFのOCR・docx/pptx は対象外（将来）。
 - **Phase 0 完了**: スパイクで openpyxl/pymupdf を実測（xlsx 3.7ms・pdf 7.5ms/枚、日本語・絵文字とも文字化けなし、破損PDFは例外で error 化可、両者オフライン）。**ライブラリ＝openpyxl＋pymupdf に確定**。📐詳細化＝要（上記「Phase 0 設計判断」に extract.py 公開I/F＋sidecar 契約を明記）。DA に実測由来 #5（openpyxl data_only の数式キャッシュ制約）を追記。`python` に `openpyxl`/`pymupdf` を依存追加（pyproject/uv.lock）。
 - **Phase 1 完了**: `extract.py`（純粋な抽出口）＋ sidecar `--extract` モードを実装。pytest 10件パス・ruff クリーン。**テスト時の知見**: pymupdf 既定フォントは CJK 非対応で日本語PDF生成は点字化する→PDFサンプルは ASCII、日本語通過確認は xlsx で担保（実ユーザーのフォント埋め込みPDFは抽出可）。`insert_text` はページ外をクリップ→上限トリム検証は xlsx の長文セルで実施。次＝Phase 2（attachments の Tauri/db 配線）。
