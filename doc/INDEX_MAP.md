@@ -50,6 +50,14 @@
 | [spec/基本設計書.md](spec/基本設計書.md) | 設計SSOT。中核設計原則・Tokioタスク/データ構造・チャネル/状態管理・モデル選定（live=8b/batch=26b）・話者分離方式（whisper非依存）・モデル切替。**実装の判断はまず本書**。由来は DD-002（詳細は `/dd` で参照）。 |
 | [spec/画面設計書.md](spec/画面設計書.md) | 画面設計のSSOT。製品期(Tauri+Quasar)のコンポーネント・インベントリ（UI実装契約）・UI設計判断の凍結。画面実装の判断はまず本書。データバインド/状態遷移は DD-007-1 を参照。由来は DD-009（詳細は `/dd` で参照）。製品画面を実装する時に読む。 |
 
+### アーキテクチャ解説（`spec/architecture/`）— 教育・background
+
+> 設計判断の背景や仕組みを理解するための解説。実装契約ではなく「なぜそうなるか」を学ぶ時に読む。
+
+| ドキュメント | 何の文書か / いつ読むか |
+|------------|----------------------|
+| [spec/architecture/Tauri-Rust-Chromium-Playwright.md](spec/architecture/Tauri-Rust-Chromium-Playwright.md) | Tauri/Rust/Chromium(WebView2)/Playwright の関係とアーキテクチャ。なぜ Playwright新規では invoke が動かず実ウィンドウ(CDP直結)では動くか。Playwright既存接続でログイン状態を再利用するTips付き。実ウィンドウ操作（`scripts/tauri-cdp.mjs`）の背景を理解したい時。 |
+
 ### データベース設計（`spec/db/`）— DBの正
 
 > DB（SQLite）の生きた設計。スキーマ・カラム定義・schema.sql は本フォルダが正。由来は DD-007（昇格は DD-007-5。詳細は `/dd` で参照）。
