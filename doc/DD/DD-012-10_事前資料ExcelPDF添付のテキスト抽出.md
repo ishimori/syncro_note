@@ -28,6 +28,7 @@
 - **取り込み手順**: 選択ファイルを**アプリ内へコピー**（`local_path`）→ `parse_status='pending'` で行作成 → サイドカー抽出 → 成否で `done`/`error`＋`extracted_text` 更新。大きすぎる本文は保存時に上限でトリム（清書前に再トリムも検討）。
 - **清書統合**: 清書バッチ生成時に当該会議の `extracted_text`（done のもの）を**前提資料セクション**としてプロンプトに連結（既存の入力統合へ追加）。
 - **UI**: S-02 で D&D 追加・一覧・状態（pending/done/error）表示・削除。S-03 で添付チップ表示（抽出済みは本文プレビュー可）。
+  - ⚠️ **申し送り（DD-012-9 由来）**: 現在 `tauri.conf.json` は `dragDropEnabled:false`（カレンダー内 HTML5 DnD を有効化するため）。この状態だと **OS からのファイルドロップが無効**。本DDでファイルD&D取り込みを作るときは、`dragDropEnabled:true` に戻して Tauri の `tauri://drag-drop` イベントで受けるか、ファイル選択は**ダイアログ方式**（`plugin-dialog`）にするかを設計時に決める（カレンダーDnDと両立させる）。
 
 ## 決定事項
 

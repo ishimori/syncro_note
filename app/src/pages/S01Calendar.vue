@@ -375,47 +375,52 @@ const restore = async (snap: MeetingDetail): Promise<void> => {
               </div>
 
               <!-- 予定/議事録チップ（全体クリックでメニュー、ドラッグで移動） -->
-              <q-chip
+              <!-- ドラッグは外側の div で受ける（q-chip clickable のリップルが HTML5 ドラッグ開始を飲むため） -->
+              <div
                 v-for="m in d.meetings"
                 :key="m.id"
-                dense
-                clickable
+                class="meet-wrap q-mt-xs"
+                :class="{ 'meet-wrap--drag': canDrag(m.status) }"
                 :draggable="canDrag(m.status)"
                 @dragstart="onDragStart(m, $event)"
                 @dragend="onDragEnd"
-                class="meet-chip q-ma-none q-mt-xs full-width justify-start no-wrap"
-                :class="{ 'meet-chip--drag': canDrag(m.status) }"
-                :color="statusColor(m.status)"
-                text-color="white"
               >
-                <q-icon :name="statusIcon(m.status)" size="14px" class="q-mr-xs" />
-                <span class="ellipsis">{{ m.time }} {{ m.title }}</span>
-                <q-icon name="expand_more" size="14px" class="q-ml-auto" />
-                <q-menu auto-close anchor="bottom left" self="top left">
-                  <q-list dense style="min-width: 168px">
-                    <q-item-label header class="q-py-xs ellipsis" style="max-width: 240px">
-                      {{ m.time }} {{ m.title }}
-                    </q-item-label>
-                    <q-item clickable @click="openMeeting(m)">
-                      <q-item-section avatar><q-icon name="open_in_new" /></q-item-section>
-                      <q-item-section>開く</q-item-section>
-                    </q-item>
-                    <q-item clickable @click="editMeeting(m)">
-                      <q-item-section avatar><q-icon name="edit" /></q-item-section>
-                      <q-item-section>編集</q-item-section>
-                    </q-item>
-                    <q-item v-if="m.status === 'completed'" clickable @click="exportMinutes(m)">
-                      <q-item-section avatar><q-icon name="download" /></q-item-section>
-                      <q-item-section>書き出し</q-item-section>
-                    </q-item>
-                    <q-separator />
-                    <q-item clickable @click="askDelete(m)" class="text-negative">
-                      <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>
-                      <q-item-section>削除</q-item-section>
-                    </q-item>
-                  </q-list>
-                </q-menu>
-              </q-chip>
+                <q-chip
+                  dense
+                  clickable
+                  class="meet-chip q-ma-none full-width justify-start no-wrap"
+                  :color="statusColor(m.status)"
+                  text-color="white"
+                >
+                  <q-icon :name="statusIcon(m.status)" size="14px" class="q-mr-xs" />
+                  <span class="ellipsis">{{ m.time }} {{ m.title }}</span>
+                  <q-icon name="expand_more" size="14px" class="q-ml-auto" />
+                  <q-menu auto-close anchor="bottom left" self="top left">
+                    <q-list dense style="min-width: 168px">
+                      <q-item-label header class="q-py-xs ellipsis" style="max-width: 240px">
+                        {{ m.time }} {{ m.title }}
+                      </q-item-label>
+                      <q-item clickable @click="openMeeting(m)">
+                        <q-item-section avatar><q-icon name="open_in_new" /></q-item-section>
+                        <q-item-section>開く</q-item-section>
+                      </q-item>
+                      <q-item clickable @click="editMeeting(m)">
+                        <q-item-section avatar><q-icon name="edit" /></q-item-section>
+                        <q-item-section>編集</q-item-section>
+                      </q-item>
+                      <q-item v-if="m.status === 'completed'" clickable @click="exportMinutes(m)">
+                        <q-item-section avatar><q-icon name="download" /></q-item-section>
+                        <q-item-section>書き出し</q-item-section>
+                      </q-item>
+                      <q-separator />
+                      <q-item clickable @click="askDelete(m)" class="text-negative">
+                        <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>
+                        <q-item-section>削除</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-chip>
+              </div>
             </div>
           </div>
         </q-card>
@@ -457,15 +462,18 @@ const restore = async (snap: MeetingDetail): Promise<void> => {
   font-size: 12px;
   color: #6b7280;
 }
+.meet-wrap {
+  width: 100%;
+}
+.meet-wrap--drag {
+  cursor: grab;
+}
+.meet-wrap--drag:active {
+  cursor: grabbing;
+}
 .meet-chip {
   font-size: 11px;
   cursor: pointer;
-}
-.meet-chip--drag {
-  cursor: grab;
-}
-.meet-chip--drag:active {
-  cursor: grabbing;
 }
 /* 空き枠の「＋」はセルにホバーした時だけ薄く出す */
 .add-btn {

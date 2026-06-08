@@ -8,6 +8,7 @@
 // 新規（?date=YYYY-MM-DD）: 空きセルからの遷移で日付を初期化する。
 import { ref, reactive, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
+import { useQuasar } from "quasar";
 import AppNav from "../components/AppNav.vue";
 import {
   createMeeting,
@@ -20,6 +21,7 @@ import {
 
 const router = useRouter();
 const route = useRoute();
+const $q = useQuasar();
 
 interface Participant {
   name: string;
@@ -133,6 +135,7 @@ const save = async (): Promise<void> => {
   }
   saving.value = true;
   errorMsg.value = "";
+  const editing = editingBase.value !== null;
   try {
     const now = localIso();
     if (editingBase.value) {
@@ -169,6 +172,15 @@ const save = async (): Promise<void> => {
       };
       await createMeeting(meeting, toDbParticipants(id));
     }
+    // 「どの予定を・いつ」が分かるよう、タイトル＋日付＋時刻を添えて通知する。
+    const when = `${date.value} ${start.value}${end.value ? "–" + end.value : ""}`;
+    $q.notify({
+      message: editing ? "変更を保存しました" : "予定を保存しました",
+      caption: `「${title.value}」 ${when}`,
+      color: "positive",
+      icon: "check_circle",
+      timeout: 2500,
+    });
     router.push("/s01"); // 保存できたらカレンダーへ（当月なら即表示される）
   } catch (e) {
     errorMsg.value = String(e);
