@@ -14,6 +14,8 @@ import ActiveRecordChip from "../components/ActiveRecordChip.vue";
 import { localIso, getMeetingDetail, listAttachments, type Attachment } from "../api";
 import { setActive, titleDate } from "../title";
 import { minutesSession } from "../session";
+import { useMemoDoc } from "../crdt/memoDoc";
+import { startMockAi } from "../crdt/mockAi";
 
 interface AiSeg {
   type: "ai";
@@ -24,12 +26,7 @@ interface AiSeg {
   refined: string | null;
   confirmed: boolean;
 }
-interface MemoSeg {
-  type: "memo";
-  t: string;
-  text: string;
-}
-type TimelineItem = AiSeg | MemoSeg;
+// 人間メモは timeline に混ぜず CRDT(memoDoc) 側で持つ（DD-013）。timeline は AI確定のみ。
 
 // サイドカー契約のイベントペイロード（DD-011 §3）
 interface MetaEvent {
@@ -88,7 +85,7 @@ const attachments = ref<Attachment[]>([]); // 事前資料（添付）
 const mapping = reactive<Record<string, string>>({});
 
 // 文字起こしは実データを Rust 経由で受信して積む（初期は空）。
-const timeline = reactive<TimelineItem[]>([]);
+const timeline = reactive<AiSeg[]>([]);
 
 // 文字起こしの状態（UIの合図）。Phase 3-C で追加、DD-012-1 で recording/paused を追加。
 type SttStatus = "idle" | "preparing" | "running" | "recording" | "paused" | "done" | "error";
@@ -221,12 +218,42 @@ const assign = (sid: string, name: string): void => {
   });
 };
 
-const memo = ref("");
-const sendMemo = (): void => {
-  if (memo.value.trim()) {
-    timeline.push({ type: "memo", t: elapsed.value.slice(3), text: memo.value });
-    memo.value = "";
+// DD-013: 人間メモは CRDT(Yjs) で保持。AIの自動追記や（将来の）複数人編集と重なっても壊れない。
+const memoDoc = useMemoDoc();
+const memoText = memoDoc.text;
+const memoConflicts = memoDoc.conflictCount;
+const onMemoInput = (v: string | number | null): void => {
+  memoDoc.setText(v == null ? "" : String(v));
+};
+// DD-013-3: 左(AI)→右(メモ)コピー。確定セグメントを人間メモ末尾へ取り込む（CRDT挿入＝衝突しない）。
+const copyToMemo = (s: AiSeg): void => {
+  const prefix = memoText.value.length > 0 && !memoText.value.endsWith("\n") ? "\n" : "";
+  memoDoc.append(`${prefix}${displayName(s)}: ${s.text}\n`);
+};
+
+// DD-013-1: 模擬AI（dev専用・Tauri不要）。録音なしで「AIが自動追記し続ける」状況を作り、
+// 人間メモとの同時編集が壊れないことを Playwright で検証する土俵にする。
+const mockRunning = ref(false);
+let mockStop: (() => void) | null = null;
+const toggleMockAi = (): void => {
+  if (mockRunning.value) {
+    mockStop?.();
+    mockStop = null;
+    mockRunning.value = false;
+    return;
   }
+  mockRunning.value = true;
+  mockStop = startMockAi((seg) => {
+    timeline.push({
+      type: "ai",
+      seq: seg.seq,
+      speaker: seg.speaker,
+      t: fmtMs(seg.seq * 1500),
+      text: seg.text,
+      refined: null,
+      confirmed: false,
+    });
+  });
 };
 
 const router = useRouter();
@@ -254,12 +281,16 @@ watch(
   { immediate: true },
 );
 
-// 確定タイムライン＋人間メモを清書用テキストに整形する（メモは明示ラベルで残す）。
-const buildTranscript = (): string =>
-  timeline
-    .map((x) => (x.type === "memo" ? `【メモ】${x.text}` : x.text))
-    .join("\n")
-    .trim();
+// 確定タイムライン(AI)＋人間メモ(CRDT)を清書用テキストに整形する（メモは明示ラベルで残す）。
+const buildTranscript = (): string => {
+  const ai = timeline.map((x) => x.text);
+  const memoLines = memoText.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => `【メモ】${l}`);
+  return [...ai, ...memoLines].join("\n").trim();
+};
 
 // "mm:ss" → ミリ秒（証跡 timeline の t_ms 用）。壊れていれば 0。
 const clockToMs = (t: string): number => {
@@ -301,16 +332,22 @@ const endMeeting = async (): Promise<void> => {
   minutesSession.transcript = transcript;
   // 証跡（元タイムライン）も構造化して持ち回り、保存時に timeline_elements へ書き込む。
   // 話者番号を埋める（DD-012-11）→ S-03 で話者表示＋色分けに使う。人間メモは null。
-  minutesSession.timeline = timeline.map((x) => ({
-    kind: x.type === "memo" ? ("human_memo" as const) : ("ai_transcription" as const),
-    speakerId: x.type === "memo" ? null : speakerNum(x.speaker),
+  const aiRows = timeline.map((x) => ({
+    kind: "ai_transcription" as const,
+    speakerId: speakerNum(x.speaker),
     tMs: clockToMs(x.t),
     text: x.text,
   }));
+  // 人間メモ(CRDT本文)は行ごとに human_memo 行へ（話者なし）。確定AIは immutable のまま。
+  const memoRows = memoText.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => ({ kind: "human_memo" as const, speakerId: null, tMs: 0, text: l }));
+  minutesSession.timeline = [...aiRows, ...memoRows];
   // 人間が確定した話者名（番号→名前）を speaker_mappings 用に集約（確定済みのみ。未確定は S-03 で Speaker_n）。
   const speakerMap = new Map<number, string>();
   timeline.forEach((x) => {
-    if (x.type !== "ai") return;
     const n = speakerNum(x.speaker);
     const name = mapping[x.speaker];
     if (n !== null && name) speakerMap.set(n, name);
@@ -413,6 +450,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unlisteners.forEach((u) => u());
   stopAlive(); // タイマー解放（案2）
+  mockStop?.(); // 模擬AI停止（DD-013-1）
 });
 </script>
 
@@ -529,7 +567,7 @@ onUnmounted(() => {
 
     <!-- メイン: 確定タイムライン（主役）＋人間メモ -->
     <q-page-container>
-      <q-page class="q-pa-md" style="max-width: 900px; margin: 0 auto">
+      <q-page class="q-pa-md" style="max-width: 1200px; margin: 0 auto">
         <q-banner dense rounded class="bg-amber-1 q-mb-sm text-grey-9">
           <template v-slot:avatar><q-icon name="info" color="amber-8" /></template>
           <b>確定文字起こしが主役</b>（即時・不可変）。LLM整形は薄い字の<b>追い上げ表示</b>。話者名をクリックすると参加者から選んで一括置換できます。
@@ -615,6 +653,20 @@ onUnmounted(() => {
             <q-tooltip>開発用: sample01.wav を mic 経路に流す</q-tooltip>
           </q-btn>
 
+          <!-- DD-013-1: 模擬AI（dev・Tauri不要）。同時編集の検証用に固定テキストを自動追記。 -->
+          <q-btn
+            v-if="isDev"
+            flat
+            dense
+            no-caps
+            :color="mockRunning ? 'deep-orange-6' : 'teal-6'"
+            :icon="mockRunning ? 'stop' : 'smart_toy'"
+            :label="mockRunning ? '模擬AI停止' : '模擬AI開始'"
+            @click="toggleMockAi"
+          >
+            <q-tooltip>開発用: 録音なしでAI追記を再現（人間メモとの同時編集テスト）</q-tooltip>
+          </q-btn>
+
           <!-- リアルタイム整形 ON/OFF（今回ぶん・CPU負荷。録音中は変更不可）DD-012-4 -->
           <q-toggle
             v-if="status !== 'recording' && status !== 'paused'"
@@ -659,16 +711,12 @@ onUnmounted(() => {
           </q-chip>
         </div>
 
-        <q-card flat bordered>
-          <q-card-section>
-            <div v-for="(s, i) in timeline" :key="i">
-              <!-- 人間メモ -->
-              <template v-if="s.type === 'memo'">
-                <q-chat-message :name="'📝人間メモ'" :text="[s.text]" :stamp="s.t" sent bg-color="orange-2" />
-              </template>
-              <!-- AI確定セグメント -->
-              <template v-else>
-                <div class="seg">
+        <div class="row q-col-gutter-md">
+          <!-- 左ペイン: 確定タイムライン（AI・主役・immutable） -->
+          <div class="col-12 col-md-7">
+            <q-card flat bordered>
+              <q-card-section>
+                <div v-for="(s, i) in timeline" :key="i" class="seg">
                   <div class="row items-center">
                     <q-badge :color="speakerColor(s.speaker)" :outline="!s.confirmed" class="q-mr-sm">
                       <span class="spk">{{ displayName(s) }}</span>
@@ -698,49 +746,74 @@ onUnmounted(() => {
                     >
                       <q-tooltip>整形待ち（生テキスト表示中）</q-tooltip>
                     </q-badge>
+                    <q-space />
+                    <!-- DD-013-3: このセグメントを右の人間メモへコピー -->
+                    <q-btn flat dense round size="sm" icon="arrow_forward" color="primary" @click="copyToMemo(s)">
+                      <q-tooltip>右の人間メモへコピー</q-tooltip>
+                    </q-btn>
                   </div>
                   <div class="q-mt-xs">{{ s.text }}</div>
                   <div v-if="showRefined && s.refined" class="refined">
                     <q-icon name="auto_fix_high" size="14px" /> {{ s.refined }}
                   </div>
                 </div>
-              </template>
-            </div>
-            <!-- 受信待ち（タイムラインが空のとき） -->
-            <div v-if="timeline.length === 0" class="text-grey-6 q-pa-md text-center">
-              <q-icon name="graphic_eq" size="28px" class="q-mb-xs" />
-              <div v-if="status === 'preparing'">モデル読込中… 最初の文字起こしまで少しかかります</div>
-              <div v-else-if="status === 'recording' || status === 'paused'">
-                <template v-if="recognizing">
-                  ● 認識中…（最初の区切りまで少しかかります。長い発話はまとまってから文字になります）
-                </template>
-                <template v-else>マイク入力待ち…（話すと文字が出ます）</template>
-              </div>
-              <div v-else>まだ文字起こしはありません。「録音開始」かサンプルで開始してください。</div>
-            </div>
-          </q-card-section>
-        </q-card>
-        <div style="height: 80px" />
+                <!-- 受信待ち（タイムラインが空のとき） -->
+                <div v-if="timeline.length === 0" class="text-grey-6 q-pa-md text-center">
+                  <q-icon name="graphic_eq" size="28px" class="q-mb-xs" />
+                  <div v-if="status === 'preparing'">モデル読込中… 最初の文字起こしまで少しかかります</div>
+                  <div v-else-if="status === 'recording' || status === 'paused'">
+                    <template v-if="recognizing">
+                      ● 認識中…（最初の区切りまで少しかかります。長い発話はまとまってから文字になります）
+                    </template>
+                    <template v-else>マイク入力待ち…（話すと文字が出ます）</template>
+                  </div>
+                  <div v-else>
+                    まだ文字起こしはありません。「録音開始」かサンプル、開発用「模擬AI開始」で表示できます。
+                  </div>
+                </div>
+              </q-card-section>
+            </q-card>
+          </div>
+
+          <!-- 右ペイン: 人間メモ（CRDT・同時編集可） DD-013 -->
+          <div class="col-12 col-md-5">
+            <q-card flat bordered>
+              <q-card-section class="q-pb-none">
+                <div class="row items-center">
+                  <q-icon name="edit_note" color="orange-8" size="20px" class="q-mr-xs" />
+                  <span class="text-subtitle2">人間メモ（同時編集）</span>
+                  <q-space />
+                  <q-chip
+                    dense
+                    square
+                    color="blue-grey-1"
+                    text-color="blue-grey-8"
+                    icon="merge"
+                    :label="'並行マージ ' + memoConflicts"
+                  >
+                    <q-tooltip>AI追記や他の人の入力と重なってCRDTがマージした回数（テキスト破壊なし）</q-tooltip>
+                  </q-chip>
+                </div>
+              </q-card-section>
+              <q-card-section>
+                <q-input
+                  :model-value="memoText"
+                  @update:model-value="onMemoInput"
+                  type="textarea"
+                  outlined
+                  autogrow
+                  input-style="min-height: 320px"
+                  placeholder="📝 ここにメモを書けます。AIの自動追記中でも壊れません。左の文字起こしは → ボタンで取り込めます。"
+                />
+              </q-card-section>
+            </q-card>
+          </div>
+        </div>
+        <div style="height: 24px" />
       </q-page>
     </q-page-container>
 
-    <!-- フッタ: 人間メモ入力 -->
-    <q-footer class="bg-white text-dark" bordered>
-      <q-toolbar class="q-py-sm" style="max-width: 900px; margin: 0 auto; width: 100%">
-        <q-btn flat round dense icon="pause" color="grey-7"><q-tooltip>一時停止</q-tooltip></q-btn>
-        <q-input
-          class="col q-mx-sm"
-          outlined
-          dense
-          v-model="memo"
-          placeholder="📝 人間メモを入力（ホワイトボードの内容・口頭指示など）… Enterで挿入"
-          @keyup.enter="sendMemo"
-        >
-          <template v-slot:prepend><q-icon name="edit_note" /></template>
-        </q-input>
-        <q-btn round color="primary" icon="send" @click="sendMemo" />
-      </q-toolbar>
-    </q-footer>
+    <!-- 人間メモはメイン右ペインの同時編集エディタへ移行（DD-013）。フッタの単一行入力は廃止。 -->
   </q-layout>
 </template>
 

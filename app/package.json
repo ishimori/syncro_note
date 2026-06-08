@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -16,7 +17,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "quasar": "^2.19.3",
     "vue": "^3.5.13",
-    "vue-router": "^4.6.4"
+    "vue-router": "^4.6.4",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "@quasar/vite-plugin": "^1.12.0",
@@ -25,6 +27,7 @@
     "sass-embedded": "^1.100.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
+    "vitest": "^4.1.8",
     "vue-tsc": "^2.1.10"
   }
 }

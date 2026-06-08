@@ -2,7 +2,7 @@
 
 | 作成日 | 更新日 | ステータス |
 |--------|--------|------------|
-| 2026-06-08 | 2026-06-08 | 未着手（DD-011 完了済みのため着手可） |
+| 2026-06-08 | 2026-06-08 | 完了（実装＋Playwright機械検証済・2ペイン同時編集の非破壊を確認） |
 
 > 親: [DD-013（P4-2 協調編集 CRDT）](DD-013_P4-2協調編集CRDT_AI追記と人間メモのマージ.md) ／ アプローチ: 標準（探索的実装）
 > 前提: [DD-011（Tauri 2ペイン骨格・P4-1）](DD-011_Phase4_Tauri2ペインUI骨格_Python中身に接続.md) 完了
@@ -39,20 +39,26 @@ Yjs ライブラリをフロント（Tauri/TypeScript/Vue3）に導入し、Yjs 
 ## タスク一覧
 
 ### Phase 0: 事前精査
-- [ ] 📋 各タスクに対象ファイルパスを明記（`app/package.json` 依存追加・`app/src/` の store/SFC）
-- [ ] 📐 実装前詳細化トリガー判定（新規依存導入＋並行処理に触れる → **詳細化要の見込み**）
-- [ ] 😈 Devil's Advocate（Yjs binding 選定リスク・Vue3 reactivity との結線の罠）
+- [x] 📋 対象ファイル明記: 依存=`app/package.json`(yjs追加) / 新規=`app/src/crdt/memoDoc.ts`・`app/src/crdt/mockAi.ts` / 改修=`app/src/pages/S05Realtime.vue`
+- [x] 📐 実装前詳細化トリガー判定（新規依存＋並行処理）→ 該当。方針を実装に内包（Y.Text＋最小差分＋single-flight=`doc.transact`、broadcast不使用）。ユーザーは「お任せ」方針のため形式レビューは省略
+- [x] 😈 Devil's Advocate（下記DA記録）
 
 ### Phase 1: Yjs 導入と binding 選定（mock AI）
-- [ ] 📐 実装前詳細化 → 👀 ユーザーレビュー
-- [ ] Yjs 導入＋ドキュメント初期化＋Vue3 store 結線、mock AI で固定テキスト追記
-- [ ] 🔬 機械検証: mock AI 追記と人間キー入力を並行 → store 表示が壊れない／single-flight で直列化されている
-- [ ] 😈 DA批判レビュー（最低1件）
+- [x] 📐 実装方針確定: Vue3結線は y-* binding を使わず `Y.Text.observe`↔`ref` の薄い自前結線（日本語事例不足の罠を回避）
+- [x] Yjs 導入＋ドキュメント初期化＋Vue3 結線、mock AI（dev・Tauri不要）で固定テキスト追記
+- [x] 🔬 機械検証(Playwright): 模擬AIが左へ31件自動追記中に人間が右メモへ32字入力 → メモ完全無傷（`重要メモ:予算は来週確定、担当はAさん。来週月曜までに見積もり。`）・表示崩れなし。single-flight=`doc.transact`で直列化
+- [x] 😈 DA批判レビュー（下記）
 
 ## ログ
 
-### 2026-06-08
+### 2026-06-08（起票）
 - 起票（DD-013 の子・未実装）。
+
+### 2026-06-08（実装・検証・完了）
+- `yjs` 導入。`app/src/crdt/memoDoc.ts`（Y.Doc/Y.Text＋`MemoProvider`抽象＋`applyMinimalEdit`最小差分＋single-flight＋`useMemoDoc`結線）と `mockAi.ts`（dev模擬AI）を新規作成。
+- `S05Realtime.vue` を2ペイン化（左=AI確定タイムライン[immutable]／右=同時編集メモ[CRDT]）。人間メモを footer 単一行から CRDT テキスト域へ移行。保存パス（`buildTranscript`／`minutesSession.timeline`）は human_memo 行として温存。
+- 検証: `vue-tsc --noEmit` 型OK。Playwright(:1420・Tauri無)で模擬AI31件追記中の人間メモ32字入力が無傷。エビデンス: 同時編集中スクショ取得。
+- 実機確認(CDP・2026-06-08): 実ウィンドウで実STT(サンプル12件)→メモ入力＋左→右コピー→「会議を終了」まで通し、コンポーネントと同一の `session` モジュールを直読みして `minutesSession.timeline`=AI12行＋human_memo2行、transcript末尾に【メモ】2行を確認（memo→human_memo 反映OK）。保存(S-07)のDB書込みは DD-012 の未変更コードのため、実DB汚染回避で意図的に未実施。
 
 ---
 
@@ -60,5 +66,9 @@ Yjs ライブラリをフロント（Tauri/TypeScript/Vue3）に導入し、Yjs 
 
 <!-- DA批判レビューの手順・品質フィルター・再チェック条件は doc/da-method.md を参照 -->
 
-### Phase N DA批判レビュー
-（着手時に記録）
+### Phase 1 DA批判レビュー（2026-06-08）
+
+| # | 指摘 | 重要度 | 対応 |
+|---|------|--------|------|
+| 1 | textarea を v-model 全置換すると別位置の並行挿入を破壊する（broadcast相当・基本設計書§3.2違反） | 高 | `applyMinimalEdit` が前方/後方一致を保ち中央差分のみ delete+insert。DD-013-2 のVitestで別位置の並行編集が両方残ることを確認済 |
+| 2 | `observe→ref→textarea` 再代入の自己ループ／カーソル飛び | 中 | 変更は `doc.transact` に集約し `LOCAL_ORIGIN` で識別。単独クライアントではカーソル維持。複数人時のカーソル保持は将来課題として明記 |
