@@ -9,11 +9,25 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter, useRoute } from "vue-router";
+import { useQuasar } from "quasar";
+import { open } from "@tauri-apps/plugin-dialog";
 import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
-import { localIso, getMeetingDetail, listAttachments, type Attachment } from "../api";
+import {
+  localIso,
+  getMeetingDetail,
+  listAttachments,
+  createMeeting,
+  updateMeeting,
+  addAttachment,
+  removeAttachment,
+  deleteMeeting,
+  type Attachment,
+  type Meeting,
+  type Participant as DbParticipant,
+} from "../api";
 import { setActive, titleDate } from "../title";
-import { minutesSession } from "../session";
+import { minutesSession, type SessionParticipant } from "../session";
 import { useMemoDoc } from "../crdt/memoDoc";
 import { startMockAi } from "../crdt/mockAi";
 
@@ -75,11 +89,15 @@ const elapsed = ref("00:00:00");
 const latency = ref(0);
 const drops = ref(0);
 
-// 右パネルは紐づく予定(?id=)の実データを表示する（DD-012-10/予定→ライブ）。ad-hoc 録音では空。
-const participants = ref<string[]>([]); // 参加者「名（役職）」
+// 右パネルは録音中に編集できる（DD-016-3/案C）。予定(?id=)から開いた場合は実データで初期化する。
+const participants = ref<SessionParticipant[]>([]); // 参加者（名前＋役職）
 const agenda = ref<string>(""); // アジェンダ本文
 const vocab = ref<string[]>([]); // 専門用語（未永続化のため当面空）
 const attachments = ref<Attachment[]>([]); // 事前資料（添付）
+
+// 参加者の表示ラベル（"名前（役職）"）。話者確定プルダウンと右パネル表示に使う。
+const labelOf = (p: SessionParticipant): string => (p.role ? `${p.name}（${p.role}）` : p.name);
+const participantLabels = computed<string[]>(() => participants.value.map(labelOf));
 
 // 確定話者マッピング（人間確定 > AI推測）
 const mapping = reactive<Record<string, string>>({});
@@ -290,6 +308,138 @@ const linkedMeetingId = ref<string | null>(null);
 const linkedTitle = ref<string>("");
 const linkedDate = ref<string>(""); // 紐づく予定の日付（OSウィンドウタイトル表示用）
 
+// DD-016-3/案C: ad-hoc 録音中に事前資料を追加すると、添付に必要な meeting_id を持つ「仮会議」を
+// 遅延作成する（status='active'・scheduled_end=NULL＝未保存マーカー。DD-016-2 のスイープ対象）。
+const $q = useQuasar();
+const tempMeetingId = ref<string | null>(null);
+const proceeding = ref(false); // 清書(S-06)へ進む＝離脱だが仮会議は残す（保存まで持ち回り）
+// 添付先の会議id（予定>仮会議）。両方無ければ null＝まだ会議行が無い。
+const attachMeetingId = computed<string | null>(() => linkedMeetingId.value ?? tempMeetingId.value);
+
+// ── 参加者の編集（録音中に追加・削除） ──
+const newName = ref("");
+const newRole = ref("");
+const addParticipant = (): void => {
+  const name = newName.value.trim();
+  if (!name) return;
+  participants.value.push({ name, role: newRole.value.trim() });
+  newName.value = "";
+  newRole.value = "";
+};
+const removeParticipant = (i: number): void => {
+  participants.value.splice(i, 1);
+};
+
+// ── 事前資料（添付）の追加・削除・抽出プレビュー（S-02/S-03 の作法を流用） ──
+const attaching = ref(false);
+const fileTypeOf = (name: string): "xlsx" | "pdf" | null => {
+  const l = name.toLowerCase();
+  if (l.endsWith(".xlsx")) return "xlsx";
+  if (l.endsWith(".pdf")) return "pdf";
+  return null;
+};
+const attachIcon = (t: string): string => (t === "xlsx" ? "grid_on" : "picture_as_pdf");
+const attachIconColor = (t: string): string => (t === "xlsx" ? "green-7" : "red-7");
+const canPreview = (a: Attachment): boolean =>
+  a.parse_status === "done" && !!(a.extracted_text && a.extracted_text.trim());
+// 抽出テキストのプレビュー（どうテキスト化されたか確認・コピー可）。
+const previewOpen = ref(false);
+const previewName = ref("");
+const previewText = ref("");
+const openPreview = (a: Attachment): void => {
+  previewName.value = a.file_name;
+  previewText.value = a.extracted_text ?? "";
+  previewOpen.value = true;
+};
+const copyPreview = async (): Promise<void> => {
+  try {
+    await navigator.clipboard.writeText(previewText.value);
+    $q.notify({ message: "抽出テキストをコピーしました", color: "indigo", icon: "content_copy", timeout: 1500 });
+  } catch {
+    $q.notify({ message: "コピーに失敗しました", color: "negative", icon: "error" });
+  }
+};
+
+// ad-hoc 用の仮タイトル（保存時の会議名と一致させる）。例: 録音メモ 06-09 14:30
+const adHocTitle = (): string => `録音メモ ${localIso().slice(5, 16).replace("T", " ")}`;
+// 現在の participants を DB Participant[] へ（meeting_id 付き）。
+const toDbParticipants = (meetingId: string): DbParticipant[] =>
+  participants.value.map((p, i) => ({
+    id: crypto.randomUUID(),
+    meeting_id: meetingId,
+    name: p.name,
+    role: p.role || null,
+    voice_hint: null,
+    sort_order: i,
+  }));
+
+// 添付に必要な会議行を確保する。予定(?id=)があればそれ、無ければ仮会議を一度だけ作る（案C）。
+const ensureMeeting = async (): Promise<string | null> => {
+  if (attachMeetingId.value) return attachMeetingId.value;
+  const id = crypto.randomUUID();
+  const now = localIso();
+  const meeting: Meeting = {
+    id,
+    title: adHocTitle(),
+    agenda: agenda.value || null,
+    place: null,
+    scheduled_start: now,
+    scheduled_end: null, // ← 未保存ad-hoc仮会議マーカー（DD-016-2 スイープ条件）
+    actual_start: now,
+    actual_end: null,
+    status: "active", // ← 仮（保存=S-07 で completed 化）
+    final_minutes: null,
+    batch_model: null,
+    generation_seconds: null,
+    audio_path: null,
+    created_at: now,
+    updated_at: now,
+  };
+  await createMeeting(meeting, toDbParticipants(id), [], []);
+  tempMeetingId.value = id;
+  minutesSession.meetingId = id;
+  minutesSession.isTempMeeting = true;
+  return id;
+};
+
+// 「資料を追加」: OSのファイル選択 → 会議を確保 → コピー＋オフライン抽出 → 一覧へ。
+const pickAndAttach = async (): Promise<void> => {
+  if (!isTauri || attaching.value) return;
+  const selected = await open({
+    multiple: true,
+    filters: [{ name: "資料 (Excel / PDF)", extensions: ["xlsx", "pdf"] }],
+  });
+  if (selected === null) return;
+  const paths = Array.isArray(selected) ? selected : [selected];
+  attaching.value = true;
+  try {
+    const mid = await ensureMeeting();
+    if (!mid) return;
+    for (const path of paths) {
+      const name = path.split(/[\\/]/).pop() ?? path;
+      const type = fileTypeOf(name);
+      if (!type) {
+        $q.notify({ message: `未対応のファイルです: ${name}`, color: "warning", icon: "block" });
+        continue;
+      }
+      const a = await addAttachment(crypto.randomUUID(), mid, path, name, type, localIso());
+      attachments.value.push(a);
+    }
+  } catch (e) {
+    $q.notify({ message: `資料の取り込みに失敗しました: ${e}`, color: "negative", icon: "error" });
+  } finally {
+    attaching.value = false;
+  }
+};
+const removeAttachmentRow = async (a: Attachment): Promise<void> => {
+  try {
+    await removeAttachment(a.id);
+    attachments.value = attachments.value.filter((x) => x.id !== a.id);
+  } catch (e) {
+    $q.notify({ message: `削除に失敗しました: ${e}`, color: "negative", icon: "error" });
+  }
+};
+
 // ヘッダのチップとOSタイトルに「会議名＋日付＋録音状態」を出す（タスクバー/Alt+Tabでも録音中だと分かる）。
 watch(
   [linkedTitle, linkedDate, status],
@@ -343,16 +493,49 @@ const endMeeting = async (): Promise<void> => {
     ending.value = false;
     return;
   }
-  // 会議はまだDBに作らない（保存するまで未保存の「生成中」を残さない）。
-  // 清書元と会議名だけ次画面へ渡し、実際の作成/書き戻しは S-07 の保存時に行う。
+  // DD-016-3: 右パネルで編集したアジェンダ・参加者を清書セッションへ渡す（保存時に会議へ反映）。
+  minutesSession.agenda = agenda.value;
+  minutesSession.participants = participants.value.map((p) => ({ ...p }));
+  proceeding.value = true; // 清書(S-06)へ進む＝S-05離脱だが仮会議は保存まで残す（onUnmounted で消さない）
+
+  // 会議行の扱いは3通り（DD-016-3/案C）。
   if (linkedMeetingId.value) {
     // 予定を開いて録音した: その予定に紐づけ、保存(S-07)で「完了」へ書き戻す（予定日・タイトルは保持）。
     minutesSession.meetingId = linkedMeetingId.value;
     minutesSession.title = linkedTitle.value || "議事録";
+  } else if (tempMeetingId.value) {
+    // ad-hoc＋事前資料あり: 仮会議が既にある。最新のアジェンダ・参加者・会議名を書き戻し、保存(S-07)で completed 化。
+    minutesSession.meetingId = tempMeetingId.value;
+    minutesSession.isTempMeeting = true;
+    minutesSession.title = adHocTitle();
+    try {
+      const now = localIso();
+      const row: Meeting = {
+        id: tempMeetingId.value,
+        title: minutesSession.title,
+        agenda: agenda.value || null,
+        place: null,
+        scheduled_start: now,
+        scheduled_end: null,
+        actual_start: now,
+        actual_end: null,
+        status: "active",
+        final_minutes: null,
+        batch_model: null,
+        generation_seconds: null,
+        audio_path: null,
+        created_at: now,
+        updated_at: now,
+      };
+      await updateMeeting(row, toDbParticipants(tempMeetingId.value));
+    } catch {
+      /* 書き戻し失敗は致命的でない（作成時の値で保存される） */
+    }
   } else {
-    // 予定を開かずその場で録音した: 今日の新規会議として保存する（従来どおり）。
+    // 予定を開かず資料も足していない: 会議行はまだ無い。保存(S-07)で agenda・participants 付き新規会議を作る。
     minutesSession.meetingId = null;
-    minutesSession.title = `録音メモ ${localIso().slice(5, 16).replace("T", " ")}`; // 例: 録音メモ 06-08 14:30
+    minutesSession.isTempMeeting = false;
+    minutesSession.title = adHocTitle();
   }
   minutesSession.transcript = transcript;
   // 証跡（元タイムライン）も構造化して持ち回り、保存時に timeline_elements へ書き込む。
@@ -413,7 +596,7 @@ onMounted(async () => {
         linkedTitle.value = d.meeting.title;
         linkedDate.value = titleDate(d.meeting.scheduled_start);
         // 右パネルを実データで満たす（参加者・アジェンダ・事前資料）。ダミーを排し実際の前提を見せる。
-        participants.value = d.participants.map((p) => (p.role ? `${p.name}（${p.role}）` : p.name));
+        participants.value = d.participants.map((p) => ({ name: p.name, role: p.role ?? "" }));
         agenda.value = d.meeting.agenda ?? "";
         vocab.value = d.vocab ?? []; // 専門用語を実データに（Bug#7。空なら専門用語セクション非表示）
         attachments.value = await listAttachments(qid);
@@ -482,6 +665,15 @@ onUnmounted(() => {
   stopAlive(); // タイマー解放（案2）
   mockStop?.(); // 模擬AI停止（DD-013-1）
   window.removeEventListener("resize", measureHeader); // DD-016-1
+  // DD-016-3/案C: 清書へ進まずに離脱した（＝録音を破棄した）なら、作った仮会議を消す。
+  // 進行中(proceeding)は S-06/S-07 へ持ち回るので消さない。取りこぼしは起動時スイープが拾う。
+  if (tempMeetingId.value && !proceeding.value) {
+    void deleteMeeting(tempMeetingId.value).catch(() => undefined);
+    if (minutesSession.meetingId === tempMeetingId.value) {
+      minutesSession.meetingId = null;
+      minutesSession.isTempMeeting = false;
+    }
+  }
 });
 </script>
 
@@ -534,45 +726,116 @@ onUnmounted(() => {
     <q-drawer side="right" v-model="drawer" show-if-above bordered :width="280">
       <q-scroll-area class="fit">
         <q-list padding>
-          <q-item-label header>アジェンダ</q-item-label>
+          <!-- アジェンダ: 録音中もその場で編集できる（DD-016-3） -->
+          <q-item-label header class="row items-center">
+            アジェンダ <q-space />
+            <q-icon name="edit" size="16px" color="grey-6"><q-tooltip>録音中も編集できます</q-tooltip></q-icon>
+          </q-item-label>
           <q-item>
             <q-item-section>
-              <div v-if="agenda" style="white-space: pre-wrap">{{ agenda }}</div>
-              <div v-else class="text-grey-6">（未設定）</div>
+              <q-input
+                v-model="agenda"
+                type="textarea"
+                outlined
+                dense
+                autogrow
+                placeholder="例）1. 前回宿題の確認 / 2. 仕様レビュー / 3. 次アクション"
+              />
             </q-item-section>
           </q-item>
           <q-separator spaced />
+          <!-- 参加者: 追加・削除。ここに入れた人は話者確定プルダウンに出る（DD-016-3） -->
           <q-item-label header>参加者</q-item-label>
           <q-item v-if="participants.length === 0">
             <q-item-section class="text-grey-6">（登録なし）</q-item-section>
           </q-item>
-          <q-item v-for="p in participants" :key="p">
+          <q-item v-for="(p, i) in participants" :key="i">
             <q-item-section avatar>
-              <q-avatar size="28px" color="secondary" text-color="white">{{ p.charAt(0) }}</q-avatar>
+              <q-avatar size="28px" color="secondary" text-color="white">{{ (p.name || "？").charAt(0) }}</q-avatar>
             </q-item-section>
-            <q-item-section>{{ p }}</q-item-section>
+            <q-item-section>
+              <q-item-label>{{ p.name }}</q-item-label>
+              <q-item-label caption v-if="p.role">{{ p.role }}</q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-btn flat round dense size="sm" icon="close" color="grey-6" @click="removeParticipant(i)">
+                <q-tooltip>削除</q-tooltip>
+              </q-btn>
+            </q-item-section>
+          </q-item>
+          <q-item>
+            <q-item-section>
+              <div class="row q-col-gutter-xs items-center">
+                <div class="col-6">
+                  <q-input v-model="newName" outlined dense placeholder="名前" @keyup.enter="addParticipant" />
+                </div>
+                <div class="col">
+                  <q-input v-model="newRole" outlined dense placeholder="役職(任意)" @keyup.enter="addParticipant" />
+                </div>
+                <div class="col-auto">
+                  <q-btn round dense color="primary" icon="add" :disable="!newName.trim()" @click="addParticipant">
+                    <q-tooltip>参加者を追加</q-tooltip>
+                  </q-btn>
+                </div>
+              </div>
+              <div class="text-caption text-grey-6 q-mt-xs">追加した人は左の話者名プルダウンから選べます。</div>
+            </q-item-section>
           </q-item>
           <q-separator spaced />
-          <!-- 事前資料（DD-012-10）: この会議に添付した Excel/PDF を一覧表示 -->
-          <q-item-label header>事前資料</q-item-label>
+          <!-- 事前資料（DD-012-10/案C・DD-016-3）: 録音中に追加でき、清書に反映される -->
+          <q-item-label header class="row items-center">
+            事前資料 <q-space />
+            <q-icon name="edit" size="16px" color="grey-6"><q-tooltip>録音中も追加できます</q-tooltip></q-icon>
+          </q-item-label>
           <q-item v-if="attachments.length === 0">
             <q-item-section class="text-grey-6">（なし）</q-item-section>
           </q-item>
           <q-item v-for="a in attachments" :key="a.id">
             <q-item-section avatar>
-              <q-icon
-                :name="a.file_type === 'xlsx' ? 'grid_on' : 'picture_as_pdf'"
-                :color="a.file_type === 'xlsx' ? 'green-7' : 'red-7'"
-              />
+              <q-icon :name="attachIcon(a.file_type)" :color="attachIconColor(a.file_type)" />
             </q-item-section>
             <q-item-section>
               <q-item-label lines="1">{{ a.file_name }}</q-item-label>
               <q-item-label caption>
-                <span v-if="a.parse_status === 'done' && a.extracted_text">清書に反映されます</span>
+                <span v-if="a.parse_status === 'done' && a.extracted_text" class="text-green-8">清書に反映されます</span>
                 <span v-else-if="a.parse_status === 'error'" class="text-negative">抽出失敗</span>
                 <span v-else-if="a.parse_status === 'pending'">解析中…</span>
                 <span v-else class="text-orange-9">本文なし</span>
               </q-item-label>
+            </q-item-section>
+            <q-item-section side class="row items-center no-wrap">
+              <q-btn
+                v-if="canPreview(a)"
+                flat
+                round
+                dense
+                size="sm"
+                icon="visibility"
+                color="primary"
+                @click="openPreview(a)"
+              >
+                <q-tooltip>どうテキスト化されたか確認</q-tooltip>
+              </q-btn>
+              <q-btn flat round dense size="sm" icon="close" color="grey-6" @click="removeAttachmentRow(a)">
+                <q-tooltip>削除</q-tooltip>
+              </q-btn>
+            </q-item-section>
+          </q-item>
+          <q-item>
+            <q-item-section>
+              <q-btn
+                outline
+                no-caps
+                color="primary"
+                icon="attach_file"
+                label="資料を追加（Excel/PDF）"
+                :loading="attaching"
+                :disable="!isTauri || attaching"
+                @click="pickAndAttach"
+              >
+                <q-tooltip v-if="!isTauri">実ウィンドウ（Tauri）でのみ追加できます</q-tooltip>
+              </q-btn>
+              <div class="text-caption text-grey-6 q-mt-xs">録音中に足した資料も、その後の清書（要約）に反映されます。</div>
             </q-item-section>
           </q-item>
           <template v-if="vocab.length">
@@ -761,8 +1024,11 @@ onUnmounted(() => {
                       <q-menu>
                         <q-list style="min-width: 180px">
                           <q-item-label header>話者を確定</q-item-label>
+                          <q-item v-if="participantLabels.length === 0">
+                            <q-item-section class="text-grey-6">右で参加者を追加してください</q-item-section>
+                          </q-item>
                           <q-item
-                            v-for="p in participants"
+                            v-for="p in participantLabels"
                             :key="p"
                             clickable
                             v-close-popup
@@ -852,6 +1118,26 @@ onUnmounted(() => {
     </q-page-container>
 
     <!-- 人間メモはメイン右ペインの同時編集エディタへ移行（DD-013）。フッタの単一行入力は廃止。 -->
+
+    <!-- 事前資料の抽出テキストプレビュー（どうテキスト化されたか確認・S-02/S-03 と同じ作法・DD-016-3） -->
+    <q-dialog v-model="previewOpen">
+      <q-card style="width: 720px; max-width: 92vw">
+        <q-card-section class="row items-center q-pb-none">
+          <q-icon name="description" color="primary" class="q-mr-sm" />
+          <div class="text-subtitle1 ellipsis">{{ previewName }}</div>
+          <q-space />
+          <q-btn flat dense no-caps size="sm" icon="content_copy" label="コピー" color="primary" @click="copyPreview" />
+          <q-btn flat round dense icon="close" v-close-popup />
+        </q-card-section>
+        <q-card-section class="text-caption text-grey-7 q-pt-xs">
+          AIの清書に渡るのと同じ内容です。シート/ページごとに見出し・表へ構造化しています。
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <pre class="extract-preview">{{ previewText }}</pre>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
 
@@ -901,5 +1187,13 @@ onUnmounted(() => {
 .timeline-scroll {
   overflow-y: auto;
   min-height: 0;
+}
+.extract-preview {
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  max-height: 50vh;
+  overflow: auto;
+  margin: 0;
 }
 </style>

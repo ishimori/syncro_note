@@ -18,11 +18,23 @@ export interface SpeakerRow {
   confirmedName: string | null; // 人間が確定した名前（未確定は null＝S-03 で Speaker_n 表示）
 }
 
+/** 録音中に右パネルで編集する参加者（名前＋役職）。保存時 participants へ変換（DD-016-3）。 */
+export interface SessionParticipant {
+  name: string;
+  role: string; // 役職（任意・空文字可）
+}
+
 export interface MinutesSession {
   title: string; // 会議名（清書プロンプトの前提に渡す）
   // 紐づく既存予定のid。カレンダー(S-01)で予定を開いて録音した場合に S-05 が設定し、保存(S-07)で
   // その予定を「完了」へ書き戻す（予定日・タイトルを保持）。開かずにその場で録音した場合は null＝今日の新規会議を作成。
+  // DD-016-3/案C: ad-hoc で事前資料を追加すると仮会議を作り、その id をここに入れる（isTempMeeting=true）。
   meetingId: string | null;
+  // ad-hoc 仮会議か（DD-016-3）。true のとき S-06/清書中の中断で仮会議を削除する（保存前の幽霊を残さない）。
+  isTempMeeting: boolean;
+  // 録音中に右パネルで編集したアジェンダ・参加者（ad-hoc 保存時に会議へ反映）DD-016-3。
+  agenda: string;
+  participants: SessionParticipant[];
   transcript: string; // 清書元（確定テキスト＋人間メモ・gemmaへ渡す連結文字列）
   timeline: TimelineRow[]; // 証跡（保存時に timeline_elements として書き込む構造化データ）
   speakers: SpeakerRow[]; // 話者番号→確定名（保存時に speaker_mappings へ・DD-012-11）
@@ -34,6 +46,9 @@ export interface MinutesSession {
 export const minutesSession = reactive<MinutesSession>({
   title: "",
   meetingId: null,
+  isTempMeeting: false,
+  agenda: "",
+  participants: [],
   transcript: "",
   timeline: [],
   speakers: [],
@@ -46,6 +61,9 @@ export const minutesSession = reactive<MinutesSession>({
 export const resetMinutesSession = (): void => {
   minutesSession.title = "";
   minutesSession.meetingId = null;
+  minutesSession.isTempMeeting = false;
+  minutesSession.agenda = "";
+  minutesSession.participants = [];
   minutesSession.transcript = "";
   minutesSession.timeline = [];
   minutesSession.speakers = [];

@@ -12,6 +12,7 @@ import AppNav from "../components/AppNav.vue";
 import ActiveRecordChip from "../components/ActiveRecordChip.vue";
 import ConversationLog from "../components/ConversationLog.vue";
 import { setActive } from "../title";
+import { deleteMeeting } from "../api";
 import { minutesSession, resetMinutesSession } from "../session";
 
 const router = useRouter();
@@ -112,6 +113,10 @@ onUnmounted(() => {
   // （会議はまだDBに作っていないので「生成中」の幽霊は残らない）。完了後は S-07 の保存に委ねる。
   if (!done.value) {
     if (isTauri) invoke("abort_summarize").catch(() => {});
+    // DD-016-3/案C: ad-hoc 仮会議を作っていた場合は、保存せず離脱したので削除する（未保存の幽霊を残さない）。
+    if (isTauri && minutesSession.isTempMeeting && minutesSession.meetingId) {
+      void deleteMeeting(minutesSession.meetingId).catch(() => undefined);
+    }
     resetMinutesSession();
   }
 });

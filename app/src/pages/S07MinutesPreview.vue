@@ -16,6 +16,7 @@ import {
   createMeeting,
   localIso,
   type Meeting,
+  type Participant,
   type SpeakerMapping,
   type TimelineElement,
 } from "../api";
@@ -118,7 +119,8 @@ const save = async (): Promise<void> => {
       }));
 
     if (minutesSession.meetingId) {
-      // 予定を開いて録音した: その予定を「完了」へ書き戻す（予定日・タイトルは保持＝今日へずらさない）。
+      // 既に会議行がある: 予定を開いて録音した場合、または ad-hoc＋事前資料で仮会議を作った場合（DD-016-3/案C）。
+      // どちらも「完了」へ書き戻す（予定日・タイトル・アジェンダ・参加者は S-05 で確定済み＝ここでは触らない）。
       const linkedId = minutesSession.meetingId;
       await completeMeeting(
         linkedId,
@@ -130,12 +132,13 @@ const save = async (): Promise<void> => {
         buildSpeakers(linkedId),
       );
     } else {
-      // 予定を開かずその場で録音した: 今日の新規会議を「完了」で1件作成する（従来どおり）。
+      // 予定を開かず資料も足していない ad-hoc: 今日の新規会議を「完了」で1件作成する。
+      // 右パネルで編集したアジェンダ・参加者（DD-016-3）も併せて保存する。
       const id = crypto.randomUUID();
       const meeting: Meeting = {
         id,
         title: minutesSession.title || "議事録",
-        agenda: null,
+        agenda: minutesSession.agenda || null,
         place: null,
         scheduled_start: now,
         scheduled_end: null,
@@ -149,7 +152,15 @@ const save = async (): Promise<void> => {
         created_at: now,
         updated_at: now,
       };
-      await createMeeting(meeting, [], buildTimeline(id), buildSpeakers(id));
+      const participants: Participant[] = minutesSession.participants.map((p, i) => ({
+        id: crypto.randomUUID(),
+        meeting_id: id,
+        name: p.name,
+        role: p.role || null,
+        voice_hint: null,
+        sort_order: i,
+      }));
+      await createMeeting(meeting, participants, buildTimeline(id), buildSpeakers(id));
     }
     resetMinutesSession();
     router.push("/s01");
