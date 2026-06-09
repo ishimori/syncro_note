@@ -77,3 +77,47 @@ def speaker_for_span(turns: list[Turn], t_start_ms: int, t_end_ms: int) -> str:
 def assign_speakers(turns: list[Turn], spans_ms: list[tuple[int, int]]) -> list[str]:
     """セグメント時間範囲の列に話者ラベルを一括で振る（``speaker_for_span`` の束ね）。"""
     return [speaker_for_span(turns, s, e) for s, e in spans_ms]
+
+
+def _next_free_label(reserved: set[str]) -> str:
+    """``reserved`` に無い最小の ``spk{n}`` を返す（新規話者への採番）。"""
+    i = 0
+    while f"spk{i}" in reserved:
+        i += 1
+    return f"spk{i}"
+
+
+def stabilize_labels(prev_map: dict[str, str], new_map: dict[str, str]) -> dict[str, str]:
+    """今回の生ラベルマップ(``new_map``)を前回マップ(``prev_map``)と整合するよう relabel する。
+
+    ローリング再分離（DD-017-2）では回ごとにクラスタ順が変わり spk0↔spk1 が入れ替わって
+    画面の色がチラつく。これを防ぐため、共有 seq 上で一致が最大になるラベル置換を貪欲に
+    決め、前回ラベルへ寄せる。前回に無い新規話者には未使用の spk 番号を割り当てる。
+    ``prev_map`` が空（初回）なら ``new_map`` をそのまま返す。純関数（副作用なし・決定的）。
+
+    引数・戻り値の map はいずれも ``{seq(str): "spk{n}"}``。
+    """
+    if not prev_map:
+        return dict(new_map)
+    # 共有 seq での (新ラベル, 旧ラベル) 一致数を集計
+    shared = new_map.keys() & prev_map.keys()
+    counts: dict[tuple[str, str], int] = {}
+    for seq in shared:
+        key = (new_map[seq], prev_map[seq])
+        counts[key] = counts.get(key, 0) + 1
+    # 一致数の多い順に 1対1 で割当（貪欲マッチ）。同数はラベル名で決定的に解決。
+    remap: dict[str, str] = {}
+    used_targets: set[str] = set()
+    for new_lbl, old_lbl in sorted(counts, key=lambda p: (-counts[p], p[0], p[1])):
+        if new_lbl in remap or old_lbl in used_targets:
+            continue
+        remap[new_lbl] = old_lbl
+        used_targets.add(old_lbl)
+    # 未割当の新ラベル（＝新規話者）に未使用 spk 番号を採番（既存の色を避ける）
+    reserved = set(prev_map.values()) | used_targets
+    for new_lbl in dict.fromkeys(new_map.values()):  # 出現順・重複除去で決定的
+        if new_lbl in remap:
+            continue
+        remap[new_lbl] = _next_free_label(reserved)
+        reserved.add(remap[new_lbl])
+    return {seq: remap[lbl] for seq, lbl in new_map.items()}

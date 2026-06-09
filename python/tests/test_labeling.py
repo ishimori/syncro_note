@@ -14,6 +14,7 @@ from synchroni_note.diarization.labeling import (
     assign_speakers,
     diarize_for_labeling,
     speaker_for_span,
+    stabilize_labels,
 )
 
 # 0-2秒=spk0 / 2-5秒=spk1 の2話者
@@ -72,3 +73,52 @@ def test_diarize_returns_empty_when_all_fail(monkeypatch):
     monkeypatch.setitem(labeling.METHODS, "onnx-embed", boom)
     monkeypatch.setitem(labeling.METHODS, "simple-cluster", boom)
     assert diarize_for_labeling(np.zeros(16000, dtype=np.float32), 16000, k=2) == []
+
+
+# --- stabilize_labels（ローリング再分離のラベル安定化・DD-017-2） ---
+
+
+def test_stabilize_empty_prev_returns_new_as_is():
+    # 初回（前回マップ無し）は生結果をそのまま使う
+    new = {"0": "spk0", "1": "spk1"}
+    assert stabilize_labels({}, new) == new
+
+
+def test_stabilize_identical_is_unchanged():
+    prev = {"0": "spk0", "1": "spk1", "2": "spk0"}
+    assert stabilize_labels(prev, dict(prev)) == prev
+
+
+def test_stabilize_realigns_fully_swapped_labels():
+    # 同じ話者構成だがクラスタ順が反転（spk0↔spk1）→ 前回の色へ戻す
+    prev = {"0": "spk0", "1": "spk1", "2": "spk0", "3": "spk1"}
+    swapped = {"0": "spk1", "1": "spk0", "2": "spk1", "3": "spk0"}
+    assert stabilize_labels(prev, swapped) == prev
+
+
+def test_stabilize_assigns_new_label_to_new_speaker():
+    # 既存話者(spk0)は維持しつつ、新規話者には未使用番号を採番
+    prev = {"0": "spk0", "1": "spk0"}
+    new = {"0": "spk0", "1": "spk0", "2": "spk1"}  # seq2 に新話者
+    out = stabilize_labels(prev, new)
+    assert out["0"] == "spk0" and out["1"] == "spk0"
+    assert out["2"] == "spk1"  # 未使用の最小番号
+
+
+def test_stabilize_relabels_segments_absent_in_prev():
+    # 前回に無い最新 seq(2,3) にも置換が適用される（反転を補正）
+    prev = {"0": "spk0", "1": "spk1"}
+    new = {"0": "spk1", "1": "spk0", "2": "spk1", "3": "spk0"}
+    out = stabilize_labels(prev, new)
+    # 生 spk1→spk0, 生 spk0→spk1 の置換が全 seq に効く
+    assert out == {"0": "spk0", "1": "spk1", "2": "spk0", "3": "spk1"}
+
+
+def test_stabilize_new_label_avoids_reused_existing_colors():
+    # 3話者: 2つは既存へ整列、1つは新規。新規番号は既存(spk0/spk1)を避ける
+    prev = {"0": "spk0", "1": "spk1"}
+    new = {"0": "spk1", "1": "spk0", "2": "spk2"}  # spk2 が新規話者
+    out = stabilize_labels(prev, new)
+    assert out["0"] == "spk0" and out["1"] == "spk1"
+    assert out["2"] not in ("spk0", "spk1")  # 既存色と衝突しない採番
+    assert out["2"] == "spk2"

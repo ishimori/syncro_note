@@ -33,6 +33,10 @@ from pathlib import Path
 REFINE_QUEUE_MAX = 3  # 未処理バックログ上限。超えたら整形を捨てる（バイパス＝主役を止めない）
 REFINE_DRAIN_TIMEOUT_S = 20.0  # 停止時に整形ワーカーの残りを掃き出す最大待ち秒
 
+# ローリング再分離（DD-017-2・テレビモード）の調整値。
+DIARIZE_INTERVAL_S = 8.0  # 録音中に再分離する間隔（秒）。テレビモードの既定
+DIARIZE_DRAIN_TIMEOUT_S = 20.0  # 停止時に再分離ワーカーの終了を待つ最大秒
+
 
 def emit(obj: dict[str, object]) -> None:
     """1行=1JSON を stdout へ書き出す。
@@ -145,6 +149,39 @@ def _emit_speaker_map(audio_parts: list, spans: list[tuple[int, int, int]], k: i
         print(f"[sidecar] speaker map skipped: {e!r}", file=sys.stderr, flush=True)
 
 
+def _diarize_and_emit(
+    audio_parts: list, spans: list[tuple[int, int, int]], k: int, prev_map: dict[str, str]
+) -> dict[str, str]:
+    """累積音声を再分離し、前回マップと整合させた ``speakers`` を emit（ローリング・DD-017-2）。
+
+    返り値は今回 emit した安定化済みマップ（次回 ``prev_map`` に渡す）。失敗・空・分離なしの
+    場合は emit せず ``prev_map`` をそのまま返す（文字起こしは決して止めない）。
+    """
+    try:
+        import numpy as np
+
+        from synchroni_note.diarization.labeling import (
+            SAMPLE_RATE,
+            diarize_for_labeling,
+            speaker_for_span,
+            stabilize_labels,
+        )
+
+        if not spans:
+            return prev_map
+        audio = np.concatenate([a.reshape(-1) for a in audio_parts])
+        turns = diarize_for_labeling(audio, SAMPLE_RATE, k=k)
+        if not turns:
+            return prev_map  # 単一話者扱い（live の暫定 spk0 のまま）
+        raw = {str(seq): speaker_for_span(turns, s, e) for seq, s, e in spans}
+        stable = stabilize_labels(prev_map, raw)
+        emit({"type": "speakers", "map": stable})
+        return stable
+    except Exception as e:  # noqa: BLE001  再分離失敗で STT を巻き添えにしない
+        print(f"[sidecar] live diarize skipped: {e!r}", file=sys.stderr, flush=True)
+        return prev_map
+
+
 def _run_realtime(args: argparse.Namespace) -> int:
     """realtime 経路（DD-010）を JSON Lines で流す。``--mic`` か ``--simulate`` で起動。"""
     from synchroni_note.bench.stt_bench import _load_model, _transcribe
@@ -201,6 +238,26 @@ def _run_realtime(args: argparse.Namespace) -> int:
             target=_refine_loop, args=(refine_q,), daemon=True, name="refine"
         )
         refine_worker.start()
+
+    # ローリング再分離（DD-017-2・テレビモード）。録音中 N 秒ごとに累積音声を再分離し、
+    # 前回マップと整合させた話者ラベルを emit する。STT を止めないよう別スレッドで実行し、
+    # worker は単一なので多重起動しない（前回が長引けば自然に間引かれる）。opt-in。
+    diar_stop = threading.Event()
+    diar_worker: threading.Thread | None = None
+    live_state = {"map": {}}  # 最後に emit した安定化済みマップ（最終 emit にも引き継ぐ）
+    if args.diarize and args.live_diarize:
+
+        def _diar_loop() -> None:
+            while not diar_stop.wait(args.diarize_interval):
+                n = len(diar_spans)  # spans は audio の後に append → len(spans)<=len(audio)
+                if n == 0:
+                    continue
+                live_state["map"] = _diarize_and_emit(
+                    diar_audio[:n], diar_spans[:n], args.speakers, live_state["map"]
+                )
+
+        diar_worker = threading.Thread(target=_diar_loop, daemon=True, name="live-diarize")
+        diar_worker.start()
 
     def sink(ch) -> None:  # noqa: ANN001  Chunk（capture.Chunk）
         nonlocal count
@@ -270,10 +327,16 @@ def _run_realtime(args: argparse.Namespace) -> int:
                 stop_event=stop_event,
                 paused=paused,
             )
-        # 会議後一括ラベリング（DD-012-5）: 停止後に貯めた音声を1回だけ話者分離し、
-        # seq→話者ラベルの対応を done の前に送る（UIが完了表示前に話者を反映できる）。
+        # 停止後の最終ラベリング: done の前に最新の話者ラベルを送る（UIが完了表示前に反映できる）。
         if args.diarize and diar_audio:
-            _emit_speaker_map(diar_audio, diar_spans, args.speakers)
+            if args.live_diarize:
+                # worker を止め、全音声で最終1回（前回マップへ整列）→ 末尾も反映（DD-017-2）。
+                diar_stop.set()
+                if diar_worker is not None:
+                    diar_worker.join(timeout=DIARIZE_DRAIN_TIMEOUT_S)
+                _diarize_and_emit(diar_audio, diar_spans, args.speakers, live_state["map"])
+            else:
+                _emit_speaker_map(diar_audio, diar_spans, args.speakers)  # 会議後一括（DD-012-5）
         emit({"type": "done", "count": count, "elapsed_s": round(time.perf_counter() - t0, 3)})
         # 整形ワーカーの残りを掃き出してから終了（trailing refined を落とさない）。
         if refine_q is not None and refine_worker is not None:
@@ -475,6 +538,17 @@ def main(argv: list[str] | None = None) -> int:
         "--no-diarize", dest="diarize", action="store_false", help="会議後の話者ラベリングを無効化"
     )
     parser.set_defaults(diarize=True)
+    parser.add_argument(
+        "--live-diarize",
+        action="store_true",
+        help="録音中に定期再分離して話者ラベルをライブ更新(テレビモード・DD-017-2)",
+    )
+    parser.add_argument(
+        "--diarize-interval",
+        type=float,
+        default=DIARIZE_INTERVAL_S,
+        help=f"ライブ再分離の間隔秒(既定{DIARIZE_INTERVAL_S}・--live-diarize時)",
+    )
     parser.add_argument(
         "--refine", action="store_true", help="確定セグメントをlive LLMで追い上げ整形(DD-012-4)"
     )
