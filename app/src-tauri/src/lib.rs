@@ -479,11 +479,16 @@ fn start_mic(
     model: Option<String>,
     simulate: Option<String>,
     refine: Option<bool>,
+    tv_mode: Option<bool>,
 ) -> Result<(), String> {
+    // テレビモード（DD-017-4・方針A）: 録音中のライブ逐次話者分離(--live-diarize)を有効化し、
+    // フルパワー配分（DD-017-3）として threads を 8 に上書き＋ライブLLM整形を無効化（CPUをSTTへ）。
+    let tv = tv_mode.unwrap_or(false);
     let (cfg_model, cfg_threads) = stt_settings(&app);
     let model = model.unwrap_or(cfg_model); // S-08 設定の STT モデル（DD-012-7）
-    let threads = cfg_threads.to_string();
-    let refine_model = live_refine_model(&app, refine); // DD-012-4: 今回ぶん上書き or 設定値
+    let threads = if tv { "8".to_string() } else { cfg_threads.to_string() };
+    // テレビモード時は整形を回さない（STT+LLM 同時実行で RTF 破綻するため・DD-003/017-3）。
+    let refine_model = if tv { None } else { live_refine_model(&app, refine) };
     // 収音デバイス: 設定 mic_device(名前)→番号に解決（DD-012-14）。simulate 時は不要。None＝OS既定。
     let dev_str = if simulate.is_none() {
         resolve_mic_device(&app).map(|d| d.to_string())
@@ -491,7 +496,7 @@ fn start_mic(
         None
     };
     eprintln!(
-        "[stt] mic model={model} threads={threads} simulate={} refine={} device={}",
+        "[stt] mic model={model} threads={threads} simulate={} refine={} tv={tv} device={}",
         simulate.is_some(),
         refine_model.is_some(),
         dev_str.as_deref().unwrap_or("default"),
@@ -508,6 +513,9 @@ fn start_mic(
     args.push(model.as_str());
     args.push("--threads");
     args.push(threads.as_str());
+    if tv {
+        args.push("--live-diarize"); // 録音中ローリング再分離（DD-017-2）
+    }
     if let Some(d) = dev_str.as_deref() {
         args.push("--device");
         args.push(d);

@@ -83,6 +83,13 @@ const leftDrawer = ref(true);
 const drawer = ref(true);
 const showRefined = ref(true); // 整形の「表示」ON/OFF（計算は止めない）
 const liveRefine = ref(false); // 整形の「実行」ON/OFF（今回ぶん・CPU負荷）。設定値で初期化（DD-012-4）
+// テレビモード（DD-017-4・方針A）: ONで録音中ライブ逐次話者分離＋フルパワーSTT(threads8)・整形オフ。
+const tvMode = ref(false);
+// オフライン可視バッジ（DD-017-4）: 完全ローカルを画面で証明する。online/offline で更新。
+const isOnline = ref(typeof navigator !== "undefined" ? navigator.onLine : true);
+const updateOnline = (): void => {
+  isOnline.value = navigator.onLine;
+};
 const refineActive = ref(false); // 実際に整形が動いている録音か（meta 由来・バッジ判定）
 const bypass = ref(false);
 const elapsed = ref("00:00:00");
@@ -200,7 +207,12 @@ const startMic = async (simulate?: string): Promise<void> => {
   if (!isTauri) return;
   resetSession();
   try {
-    await invoke("start_mic", { simulate: simulate ?? null, refine: liveRefine.value }); // STT=S-08設定 / 整形=今回トグル(DD-012-4)
+    // テレビモード時は整形オフ＋tvModeをRustへ（threads8/--live-diarize はRust側で付与・DD-017-4）。
+    await invoke("start_mic", {
+      simulate: simulate ?? null,
+      refine: tvMode.value ? false : liveRefine.value, // STT=S-08設定 / 整形=今回トグル(DD-012-4)
+      tvMode: tvMode.value,
+    });
   } catch (e) {
     status.value = "error";
     errorMsg.value = String(e);
@@ -610,6 +622,8 @@ onMounted(async () => {
   await nextTick();
   measureHeader();
   window.addEventListener("resize", measureHeader);
+  window.addEventListener("online", updateOnline); // DD-017-4: オフラインバッジ更新
+  window.addEventListener("offline", updateOnline);
   watch(bypass, () => nextTick(measureHeader));
   // DD-016-3: 新しい録音セッションの開始。前回の未保存 ad-hoc 仮会議マーカーが残っていても引きずらない
   // （残存すると別会議の録音→中断で誤って実会議を削除しうる・コードレビュー指摘の防御）。
@@ -702,6 +716,8 @@ onUnmounted(() => {
   stopAlive(); // タイマー解放（案2）
   mockStop?.(); // 模擬AI停止（DD-013-1）
   window.removeEventListener("resize", measureHeader); // DD-016-1
+  window.removeEventListener("online", updateOnline); // DD-017-4
+  window.removeEventListener("offline", updateOnline);
   // DD-016-3/案C: 清書へ進まずに離脱した（＝録音を破棄した）なら、作った仮会議を消す。
   // 進行中(proceeding)は S-06/S-07 へ持ち回るので消さない。取りこぼしは起動時スイープが拾う。
   if (tempMeetingId.value && !proceeding.value) {
@@ -728,6 +744,17 @@ onUnmounted(() => {
         <span v-if="status === 'recording'" class="rec-dot q-mr-sm" />
         <q-toolbar-title>リアルタイム議事録</q-toolbar-title>
         <ActiveRecordChip />
+        <!-- オフライン可視バッジ（DD-017-4）: 完全ローカルを画面で証明。オフライン=安心の状態 -->
+        <q-chip
+          dense
+          :color="isOnline ? 'orange-4' : 'green-5'"
+          text-color="white"
+          :icon="isOnline ? 'wifi' : 'flight'"
+          :label="isOnline ? 'オンライン' : 'オフライン（完全ローカル）'"
+          class="q-mr-sm"
+        >
+          <q-tooltip>{{ isOnline ? "ネット接続あり。機内モードでも全機能が動きます" : "ネット遮断中。AI処理はすべてこのPC内で完結しています" }}</q-tooltip>
+        </q-chip>
         <q-chip dense color="white" text-color="primary" icon="schedule" :label="elapsed" class="q-mr-sm" />
         <q-chip
           dense
@@ -1018,9 +1045,22 @@ onUnmounted(() => {
             color="primary"
             icon="auto_fix_high"
             label="リアルタイム整形"
-            :disable="!isTauri"
+            :disable="!isTauri || tvMode"
           >
             <q-tooltip>会議中にAIで文字を整える（CPU負荷増）。OFFで軽くなります。既定は設定(S-08)に従う</q-tooltip>
+          </q-toggle>
+
+          <!-- テレビモード ON/OFF（DD-017-4・方針A）。ONで録音中ライブ話者分離＋フルパワーSTT・整形オフ -->
+          <q-toggle
+            v-if="status !== 'recording' && status !== 'paused'"
+            v-model="tvMode"
+            dense
+            color="deep-purple"
+            icon="live_tv"
+            label="テレビモード"
+            :disable="!isTauri"
+          >
+            <q-tooltip>録音中に話者をライブで色分け＋文字起こしにCPUを全振り（整形オフ）。テレビ等の多人数デモ向け</q-tooltip>
           </q-toggle>
 
           <!-- 状態チップ -->
